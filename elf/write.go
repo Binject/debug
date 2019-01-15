@@ -159,8 +159,6 @@ func (elfFile *File) Write(destFile string) error {
 	sortedSections := elfFile.Sections[:]
 	sort.Slice(sortedSections, func(a, b int) bool { return elfFile.Sections[a].Offset < elfFile.Sections[b].Offset })
 	for _, s := range sortedSections {
-		log.Printf("%+v\n", s)
-
 		if s.Type == SHT_NULL {
 			continue
 		}
@@ -180,6 +178,12 @@ func (elfFile *File) Write(destFile string) error {
 		}
 		binary.Write(w, elfFile.ByteOrder, section)
 		bytesWritten += uint64(len(section))
+
+		if len(elfFile.Insertion) > 0 && s.Size-uint64(len(section)) == uint64(len(elfFile.Insertion)) {
+			binary.Write(w, elfFile.ByteOrder, elfFile.Insertion)
+			bytesWritten += uint64(len(elfFile.Insertion))
+		}
+
 		w.Flush()
 	}
 

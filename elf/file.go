@@ -57,6 +57,7 @@ type File struct {
 	closer    io.Closer
 	gnuNeed   []verneed
 	gnuVersym []byte
+	Insertion []byte
 }
 
 // A SectionHeader represents a single ELF section header.
