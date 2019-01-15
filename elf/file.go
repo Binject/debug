@@ -45,6 +45,8 @@ type FileHeader struct {
 	Type       Type
 	Machine    Machine
 	Entry      uint64
+	SHTOffset  int64
+	ShStrIndex int
 }
 
 // A File represents an open ELF file.
@@ -274,9 +276,8 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	// Read ELF file header
 	var phoff int64
 	var phentsize, phnum int
-	var shoff int64
-	var shentsize, shnum, shstrndx int
-	shstrndx = -1
+	var shentsize, shnum int
+	f.ShStrIndex = -1
 	switch f.Class {
 	case ELFCLASS32:
 		hdr := new(Header32)
@@ -293,10 +294,10 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		phoff = int64(hdr.Phoff)
 		phentsize = int(hdr.Phentsize)
 		phnum = int(hdr.Phnum)
-		shoff = int64(hdr.Shoff)
+		f.SHTOffset = int64(hdr.Shoff)
 		shentsize = int(hdr.Shentsize)
 		shnum = int(hdr.Shnum)
-		shstrndx = int(hdr.Shstrndx)
+		f.ShStrIndex = int(hdr.Shstrndx)
 	case ELFCLASS64:
 		hdr := new(Header64)
 		sr.Seek(0, seekStart)
@@ -312,14 +313,14 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		phoff = int64(hdr.Phoff)
 		phentsize = int(hdr.Phentsize)
 		phnum = int(hdr.Phnum)
-		shoff = int64(hdr.Shoff)
+		f.SHTOffset = int64(hdr.Shoff)
 		shentsize = int(hdr.Shentsize)
 		shnum = int(hdr.Shnum)
-		shstrndx = int(hdr.Shstrndx)
+		f.ShStrIndex = int(hdr.Shstrndx)
 	}
 
-	if shnum > 0 && shoff > 0 && (shstrndx < 0 || shstrndx >= shnum) {
-		return nil, &FormatError{0, "invalid ELF shstrndx", shstrndx}
+	if shnum > 0 && f.SHTOffset > 0 && (f.ShStrIndex < 0 || f.ShStrIndex >= shnum) {
+		return nil, &FormatError{0, "invalid ELF shstrndx", f.ShStrIndex}
 	}
 
 	// Read program headers
@@ -369,7 +370,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	f.Sections = make([]*Section, shnum)
 	names := make([]uint32, shnum)
 	for i := 0; i < shnum; i++ {
-		off := shoff + int64(i)*int64(shentsize)
+		off := f.SHTOffset + int64(i)*int64(shentsize)
 		sr.Seek(off, seekStart)
 		s := new(Section)
 		switch f.Class {
@@ -445,7 +446,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	}
 
 	// Load section header string table.
-	shstrtab, err := f.Sections[shstrndx].Data()
+	shstrtab, err := f.Sections[f.ShStrIndex].Data()
 	if err != nil {
 		return nil, err
 	}
@@ -453,7 +454,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		var ok bool
 		s.Name, ok = getString(shstrtab, int(names[i]))
 		if !ok {
-			return nil, &FormatError{shoff + int64(i*shentsize), "bad section name index", names[i]}
+			return nil, &FormatError{f.SHTOffset + int64(i*shentsize), "bad section name index", names[i]}
 		}
 	}
 
