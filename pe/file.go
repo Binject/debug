@@ -21,6 +21,8 @@ const seekStart = 0
 
 // A File represents an open PE file.
 type File struct {
+	DosHeader
+	DosStub		   [64]byte
 	FileHeader
 	OptionalHeader interface{} // of type *OptionalHeader32 or *OptionalHeader64
 	Sections       []*Section
@@ -70,23 +72,23 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	f := new(File)
 	sr := io.NewSectionReader(r, 0, 1<<63-1)
 
-	var dosheader [96]byte
-	if _, err := r.ReadAt(dosheader[0:], 0); err != nil {
-		return nil, err
-	}
-	var base int64
-	if dosheader[0] == 'M' && dosheader[1] == 'Z' {
-		signoff := int64(binary.LittleEndian.Uint32(dosheader[0x3c:]))
+	binary.Read(sr, binary.LittleEndian, &f.DosHeader)
+	binary.Read(sr, binary.LittleEndian, &f.DosStub)
+
+	var peHeaderOffset int64
+	if f.DosHeader.MZSignature == 0x5a4d {
+		peHeaderOffset = int64(f.DosHeader.AddressOfNewExeHeader)
 		var sign [4]byte
-		r.ReadAt(sign[:], signoff)
+		r.ReadAt(sign[:], peHeaderOffset)
 		if !(sign[0] == 'P' && sign[1] == 'E' && sign[2] == 0 && sign[3] == 0) {
 			return nil, fmt.Errorf("Invalid PE COFF file signature of %v.", sign)
 		}
-		base = signoff + 4
+		peHeaderOffset += int64(4)
 	} else {
-		base = int64(0)
+		peHeaderOffset = int64(0)
 	}
-	sr.Seek(base, seekStart)
+
+	sr.Seek(peHeaderOffset, seekStart)
 	if err := binary.Read(sr, binary.LittleEndian, &f.FileHeader); err != nil {
 		return nil, err
 	}
@@ -115,10 +117,8 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	}
 
 	// Read optional header.
-	sr.Seek(base, seekStart)
-	if err := binary.Read(sr, binary.LittleEndian, &f.FileHeader); err != nil {
-		return nil, err
-	}
+	sr.Seek(peHeaderOffset + int64(binary.Size(f.FileHeader)), seekStart)
+
 	var oh32 OptionalHeader32
 	var oh64 OptionalHeader64
 	switch f.FileHeader.SizeOfOptionalHeader {
