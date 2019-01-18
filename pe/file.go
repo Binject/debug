@@ -154,6 +154,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		s := new(Section)
 		s.SectionHeader = SectionHeader{
 			Name:                 name,
+			OriginalName:		  sh.Name,
 			VirtualSize:          sh.VirtualSize,
 			VirtualAddress:       sh.VirtualAddress,
 			Size:                 sh.SizeOfRawData,

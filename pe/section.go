@@ -69,6 +69,7 @@ func readRelocs(sh *SectionHeader, r io.ReadSeeker) ([]Reloc, error) {
 // field replaced by Go string.
 type SectionHeader struct {
 	Name                 string
+	OriginalName		 [8]uint8
 	VirtualSize          uint32
 	VirtualAddress       uint32
 	Size                 uint32
