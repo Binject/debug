@@ -22,13 +22,14 @@ const seekStart = 0
 // A File represents an open PE file.
 type File struct {
 	DosHeader
-	DosStub		   [64]byte
+	DosStub		   	 [64]byte
 	FileHeader
-	OptionalHeader interface{} // of type *OptionalHeader32 or *OptionalHeader64
-	Sections       []*Section
-	Symbols        []*Symbol    // COFF symbols with auxiliary symbol records removed
-	COFFSymbols    []COFFSymbol // all COFF symbols (including auxiliary symbol records)
-	StringTable    StringTable
+	OptionalHeader 	 interface{} // of type *OptionalHeader32 or *OptionalHeader64
+	Sections       	 []*Section
+	Symbols        	 []*Symbol    // COFF symbols with auxiliary symbol records removed
+	COFFSymbols    	 []COFFSymbol // all COFF symbols (including auxiliary symbol records)
+	StringTable    	 StringTable
+	CertificateTable []byte
 
 	closer io.Closer
 }
@@ -179,6 +180,11 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	f.CertificateTable, err = readCertTable(f, sr)
+	if err != nil {
+		return nil, err
 	}
 
 	return f, nil

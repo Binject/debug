@@ -64,8 +64,6 @@ func (peFile *File) Write(destFile string) error {
 		bytesWritten += uint64(binary.Size(sectionHeader))
 	}
 
-	w.Flush()
-
 	// write sections' data
 	for idx, sectionHeader := range sectionHeaders {
 		sectionData, err := peFile.Sections[idx].Data()
@@ -80,28 +78,9 @@ func (peFile *File) Write(destFile string) error {
 			sectionData = append(padding, sectionData...)
 		}
 
-		// pad section if VirtualSize is greater than SizeOfRawData
-		/*if sectionHeader.VirtualSize > sectionHeader.SizeOfRawData {
-			paddingSize := sectionHeader.VirtualSize - sectionHeader.SizeOfRawData
-			padding := make([]byte, paddingSize, paddingSize)
-			sectionData = append(padding, sectionData...)
-		}*/
-
 		binary.Write(w, binary.LittleEndian, sectionData)
 		bytesWritten += uint64(len(sectionData))
-
-		w.Flush()
 	}
-
-	/*
-	for i := range f.Sections {
-		var err error
-		f.Sections[i].Relocs, err = readRelocs(&f.Sections[i].SectionHeader, sr)
-		if err != nil {
-			return nil, err
-		}
-	}
-	*/
 
 	// write symbols
 	binary.Write(w, binary.LittleEndian, peFile.COFFSymbols)
@@ -110,6 +89,23 @@ func (peFile *File) Write(destFile string) error {
 	// write the string table
 	binary.Write(w, binary.LittleEndian, peFile.StringTable)
 	bytesWritten += uint64(binary.Size(peFile.StringTable))
+
+	// write the certificate table
+	_, certTableOffset, certTableSize, err := getCertTableInfo(peFile)
+	if err != nil {
+		return err
+	}
+	if certTableOffset != 0 && certTableSize != 0 {
+		var certTable []byte
+		if certTableOffset != int64(bytesWritten) {
+			paddingSize := certTableOffset - int64(bytesWritten)
+			padding := make([]byte, paddingSize, paddingSize)
+			certTable = append(padding, certTable...)
+		}
+		certTable = append(certTable, peFile.CertificateTable...)
+		binary.Write(w, binary.LittleEndian, certTable)
+		bytesWritten += uint64(len(certTable))
+	}
 
 	w.Flush()
 

@@ -66,7 +66,8 @@ func readRelocs(sh *SectionHeader, r io.ReadSeeker) ([]Reloc, error) {
 }
 
 // SectionHeader is similar to SectionHeader32 with Name
-// field replaced by Go string.
+// field replaced by Go string. OriginalName is the
+// original name of the section on disk.
 type SectionHeader struct {
 	Name                 string
 	OriginalName		 [8]uint8
