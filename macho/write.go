@@ -90,6 +90,49 @@ func (machoFile *File) Write(destFile string) error {
 		w.Flush()
 	}
 
+	// Pad to the next 1k?
+
+	// Write Imported Symbols
+	//isymbs := machoFile.ImportedSymbols
+	//buf3 := &bytes.Buffer{}
+	//err = binary.Write(buf3, machoFile.ByteOrder, isymbs)
+	//if err != nil {
+	//	panic(err)
+	//}
+	//binary.Write(w, machoFile.ByteOrder, isymbs)
+	//isymbsLength := len(buf3.Bytes())
+	//log.Printf("Wrote imported symbols, total size of: %v", isymbsLength)
+
+	// Write Symbols is next I think
+	sym := machoFile.Symtab
+	symLen := len(sym.Raw())
+	binary.Write(w, machoFile.ByteOrder, sym.Raw())
+	log.Printf("Wrote symbol table, total size of: %v", symLen)
+	for _, symbol := range machoFile.Symtab.Syms {
+		//buf3 := &bytes.Buffer{}
+		//err = binary.Write(buf3, machoFile.ByteOrder, symbol)
+		//if err != nil {
+		//	panic(err)
+		//}
+		//symbolLength := len(buf3.Bytes())
+		err = binary.Write(w, machoFile.ByteOrder, symbol)
+		if err != nil {
+			//panic(err) // This fails
+			log.Printf("Failed to write symbol")
+		}
+		log.Printf("Symbol deets: %+v", symbol)
+
+		//bytesWritten += uint64(symbolLength)
+		//log.Printf("Wrote file header of size: %v", bytesWritten)
+	}
+
+	// Write the Dynamic Symbols
+	//DynSymBytes := machoFile.Dysymtab.LoadBytes
+	//DynSymLength := len(DynSymBytes)
+	//binary.Write(w, machoFile.ByteOrder, DynSymBytes)
+	//bytesWritten += uint64(DynSymLength)
+	//log.Printf("Wrote DynSymTable of size: %v", bytesWritten)
+
 	// Write the rest
 
 	w.Flush()
