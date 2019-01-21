@@ -62,6 +62,9 @@ func (machoFile *File) Write(destFile string) error {
 	sortedSections := machoFile.Sections[:]
 	//sort.Slice(sortedSections, func(a, b int) bool { return machoFile.Sections[a].Offset < machoFile.Sections[b].Offset })
 	for _, s := range sortedSections {
+
+		log.Printf("section/segment name: %s %s\n", s.Name, s.Seg)
+
 		if bytesWritten > uint64(s.Offset) {
 			log.Printf("Overlapping Sections in Generated macho: %+v\n", s.Name)
 			continue
@@ -104,36 +107,57 @@ func (machoFile *File) Write(destFile string) error {
 	//log.Printf("Wrote imported symbols, total size of: %v", isymbsLength)
 
 	// Write Symbols is next I think
-	sym := machoFile.Symtab
-	symLen := len(sym.Raw())
-	binary.Write(w, machoFile.ByteOrder, sym.Raw())
-	log.Printf("Wrote symbol table, total size of: %v", symLen)
-	for _, symbol := range machoFile.Symtab.Syms {
-		//buf3 := &bytes.Buffer{}
-		//err = binary.Write(buf3, machoFile.ByteOrder, symbol)
-		//if err != nil {
-		//	panic(err)
-		//}
-		//symbolLength := len(buf3.Bytes())
-		err = binary.Write(w, machoFile.ByteOrder, symbol)
-		if err != nil {
-			//panic(err) // This fails
-			log.Printf("Failed to write symbol")
-		}
-		log.Printf("Symbol deets: %+v", symbol)
+	symtab := machoFile.Symtab
+	log.Printf("Bytes written: %d", bytesWritten)
+	log.Printf("Indirect symbol offset: %d", machoFile.Dysymtab.DysymtabCmd.Indirectsymoff)
+	log.Printf("Locrel offset: %d", machoFile.Dysymtab.Locreloff)
+	log.Printf("Symtab offset: %d", symtab.Symoff)
+	log.Printf("String table offset: %d", symtab.Stroff)
+	pad := make([]byte, uint64(symtab.Symoff)-bytesWritten)
+	w.Write(pad)
+	log.Printf("wrote pad of: %d", uint64(symtab.Symoff)-bytesWritten)
+	bytesWritten += (uint64(symtab.Symoff) - bytesWritten)
 
-		//bytesWritten += uint64(symbolLength)
-		//log.Printf("Wrote file header of size: %v", bytesWritten)
-	}
+	w.Write(symtab.RawSymtab)
+	log.Printf("Wrote raw symtab, length of: %d", len(symtab.RawSymtab))
+	bytesWritten += uint64(len(symtab.RawSymtab))
+	log.Printf("Bytes written: %d", bytesWritten)
 
-	// Write the Dynamic Symbols
-	//DynSymBytes := machoFile.Dysymtab.LoadBytes
-	//DynSymLength := len(DynSymBytes)
-	//binary.Write(w, machoFile.ByteOrder, DynSymBytes)
-	//bytesWritten += uint64(DynSymLength)
-	//log.Printf("Wrote DynSymTable of size: %v", bytesWritten)
+	//log.Printf("SymTab info: %+v", symtab)
+	//log.Printf("padding: %d", (uint64(symtab.Symoff) - bytesWritten))
+
+	// Write DySymTab next!
+	dysymtab := machoFile.Dysymtab
+	pad2 := make([]byte, uint64(dysymtab.Indirectsymoff)-bytesWritten)
+	w.Write(pad2)
+	log.Printf("wrote pad of: %d", pad2)
+	bytesWritten += uint64(len(pad2))
+	log.Printf("Bytes written: %d", bytesWritten)
+	w.Write(dysymtab.RawDysymtab)
+	log.Printf("Wrote raw indirect symbols, length of: %d", len(dysymtab.RawDysymtab))
+	bytesWritten += uint64(len(dysymtab.RawDysymtab))
+	log.Printf("Bytes written: %d", bytesWritten)
+
+	// Write StringTab!
+	pad3 := make([]byte, uint64(symtab.Stroff)-bytesWritten)
+	w.Write(pad3)
+	log.Printf("wrote pad of: %d", pad3)
+	bytesWritten += uint64(len(pad3))
+	log.Printf("Bytes written: %d", bytesWritten)
+	w.Write(symtab.RawStringtab)
+	log.Printf("Wrote raw stringtab, length of: %d", len(symtab.RawStringtab))
+	bytesWritten += uint64(len(symtab.RawStringtab))
+	log.Printf("Bytes written: %d", bytesWritten)
+	w.Flush()
 
 	// Write the rest
+
+	// Write 0s to the end of the final segment
+	//pad4 := make([]byte, uint64(FinSegEnd)-bytesWritten)
+	//w.Write(pad4)
+	//log.Printf("wrote pad of: %d", pad4)
+	//bytesWritten += uint64(len(pad4))
+	//log.Printf("Bytes written: %d", bytesWritten)
 
 	w.Flush()
 	log.Println("All done!")
