@@ -74,6 +74,8 @@ var cpuStrings = []intName{
 	{uint32(CpuPpc64), "CpuPpc64"},
 }
 
+var FinalSegEnd uint64
+
 func (i Cpu) String() string   { return stringName(uint32(i), cpuStrings, false) }
 func (i Cpu) GoString() string { return stringName(uint32(i), cpuStrings, true) }
 

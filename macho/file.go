@@ -150,7 +150,9 @@ type Dylib struct {
 type Symtab struct {
 	LoadBytes
 	SymtabCmd
-	Syms []Symbol
+	Syms         []Symbol
+	RawSymtab    []byte
+	RawStringtab []byte
 }
 
 // A Dysymtab represents a Mach-O dynamic symbol table command.
@@ -158,6 +160,7 @@ type Dysymtab struct {
 	LoadBytes
 	DysymtabCmd
 	IndirectSyms []uint32 // indices into Symtab.Syms
+	RawDysymtab  []byte
 }
 
 // A Rpath represents a Mach-O rpath command.
@@ -277,6 +280,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		cmddat, dat = dat[0:siz], dat[siz:]
 		offset += int64(siz)
 		var s *Segment
+		fmt.Printf("LoadCmdVal: %+v\n", cmd)
 		switch cmd {
 		default:
 			f.Loads[i] = LoadBytes(cmddat)
@@ -338,6 +342,8 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			}
 			f.Loads[i] = st
 			f.Symtab = st
+			f.Symtab.Symoff = hdr.Symoff
+			f.Symtab.Stroff = hdr.Stroff
 
 		case LoadCmdDysymtab:
 			var hdr DysymtabCmd
@@ -359,6 +365,8 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			st.IndirectSyms = x
 			f.Loads[i] = st
 			f.Dysymtab = st
+			f.Dysymtab.Indirectsymoff = hdr.Indirectsymoff
+			f.Dysymtab.RawDysymtab = dat
 
 		case LoadCmdSegment:
 			var seg32 Segment32
@@ -379,6 +387,9 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			s.Prot = seg32.Prot
 			s.Nsect = seg32.Nsect
 			s.Flag = seg32.Flag
+			if uint64((seg32.Offset + seg32.Filesz)) > FinalSegEnd {
+				FinalSegEnd = uint64((seg32.Offset + seg32.Filesz))
+			}
 			f.Loads[i] = s
 			for i := 0; i < int(s.Nsect); i++ {
 				var sh32 Section32
@@ -419,6 +430,9 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			s.Prot = seg64.Prot
 			s.Nsect = seg64.Nsect
 			s.Flag = seg64.Flag
+			if uint64((seg64.Offset + seg64.Filesz)) > FinalSegEnd {
+				FinalSegEnd = uint64((seg64.Offset + seg64.Filesz))
+			}
 			f.Loads[i] = s
 			for i := 0; i < int(s.Nsect); i++ {
 				var sh64 Section64
@@ -482,6 +496,8 @@ func (f *File) parseSymtab(symdat, strtab, cmddat []byte, hdr *SymtabCmd, offset
 	st := new(Symtab)
 	st.LoadBytes = LoadBytes(cmddat)
 	st.Syms = symtab
+	st.RawSymtab = symdat
+	st.RawStringtab = strtab
 	return st, nil
 }
 
