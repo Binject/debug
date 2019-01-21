@@ -153,11 +153,11 @@ func (machoFile *File) Write(destFile string) error {
 	// Write the rest
 
 	// Write 0s to the end of the final segment
-	//pad4 := make([]byte, uint64(FinSegEnd)-bytesWritten)
-	//w.Write(pad4)
-	//log.Printf("wrote pad of: %d", pad4)
-	//bytesWritten += uint64(len(pad4))
-	//log.Printf("Bytes written: %d", bytesWritten)
+	pad4 := make([]byte, uint64(FinalSegEnd)-bytesWritten)
+	w.Write(pad4)
+	log.Printf("wrote pad of: %d", len(pad4))
+	bytesWritten += uint64(len(pad4))
+	log.Printf("Bytes written: %d", bytesWritten)
 
 	w.Flush()
 	log.Println("All done!")

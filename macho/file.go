@@ -387,6 +387,9 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			s.Prot = seg32.Prot
 			s.Nsect = seg32.Nsect
 			s.Flag = seg32.Flag
+			if uint64((seg32.Offset + seg32.Filesz)) > FinalSegEnd {
+				FinalSegEnd = uint64((seg32.Offset + seg32.Filesz))
+			}
 			f.Loads[i] = s
 			for i := 0; i < int(s.Nsect); i++ {
 				var sh32 Section32
@@ -427,6 +430,9 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			s.Prot = seg64.Prot
 			s.Nsect = seg64.Nsect
 			s.Flag = seg64.Flag
+			if uint64((seg64.Offset + seg64.Filesz)) > FinalSegEnd {
+				FinalSegEnd = uint64((seg64.Offset + seg64.Filesz))
+			}
 			f.Loads[i] = s
 			for i := 0; i < int(s.Nsect); i++ {
 				var sh64 Section64
