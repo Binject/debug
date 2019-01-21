@@ -93,18 +93,15 @@ func (machoFile *File) Write(destFile string) error {
 		w.Flush()
 	}
 
-	// Pad to the next 1k?
+	//Load command 3
+	//cmd LC_SEGMENT_64
+	//cmdsize 72
+	//segname __LINKEDIT
+	//fileoff 12288
 
-	// Write Imported Symbols
-	//isymbs := machoFile.ImportedSymbols
-	//buf3 := &bytes.Buffer{}
-	//err = binary.Write(buf3, machoFile.ByteOrder, isymbs)
-	//if err != nil {
-	//	panic(err)
-	//}
-	//binary.Write(w, machoFile.ByteOrder, isymbs)
-	//isymbsLength := len(buf3.Bytes())
-	//log.Printf("Wrote imported symbols, total size of: %v", isymbsLength)
+	// Write Something Here!
+	// Load command 4
+	// cmd LC_DYLD_INFO_ONLY
 
 	// Write Symbols is next I think
 	symtab := machoFile.Symtab
@@ -151,6 +148,10 @@ func (machoFile *File) Write(destFile string) error {
 	w.Flush()
 
 	// Write the rest
+
+	// Write the Signature
+	// Load command 15
+	// cmd LC_CODE_SIGNATURE
 
 	// Write 0s to the end of the final segment
 	pad4 := make([]byte, uint64(FinalSegEnd)-bytesWritten)
