@@ -92,6 +92,7 @@ const (
 	LoadCmdDylinker   LoadCmd = 0xf // id dylinker command (not load dylinker command)
 	LoadCmdSegment64  LoadCmd = 0x19
 	LoadCmdRpath      LoadCmd = 0x8000001c
+	LoadCmdSignature  LoadCmd = 0x1d
 )
 
 var cmdStrings = []intName{
@@ -135,6 +136,13 @@ type (
 		Prot    uint32
 		Nsect   uint32
 		Flag    uint32
+	}
+
+	// A SigBlockCmd is a Mach-O symbol table command.
+	SigBlockCmd struct {
+		Len     uint32
+		Sigoff  uint32
+		Sigsize uint32
 	}
 
 	// A SymtabCmd is a Mach-O symbol table command.
