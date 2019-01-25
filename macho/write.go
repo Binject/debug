@@ -135,18 +135,35 @@ func (machoFile *File) Write(destFile string) error {
 	log.Printf("Bytes written: %d", bytesWritten)
 	w.Flush()
 
-	// Write the rest
+	// Write The Signature Block, if it exists
+
+	//log.Printf("SigBlock Dat: %v", machoFile.SigBlock)
+	if machoFile.SigBlock != nil {
+		padX := make([]byte, machoFile.SigBlock.Offset-bytesWritten)
+		w.Write(padX)
+		log.Printf("wrote pad of: %d", padX)
+		bytesWritten += uint64(len(padX))
+		log.Printf("Bytes written: %d", bytesWritten)
+		w.Write(machoFile.SigBlock.RawDat)
+		log.Printf("Wrote raw stringtab, length of: %d", machoFile.SigBlock.Len)
+		bytesWritten += uint64(machoFile.SigBlock.Len)
+		log.Printf("Bytes written: %d", bytesWritten)
+		w.Flush()
+	}
 
 	// Write the Signature
 	// Load command 15
 	// cmd LC_CODE_SIGNATURE
 
 	// Write 0s to the end of the final segment
-	pad4 := make([]byte, uint64(FinalSegEnd)-bytesWritten)
-	w.Write(pad4)
-	log.Printf("wrote pad of: %d", len(pad4))
-	bytesWritten += uint64(len(pad4))
-	log.Printf("Bytes written: %d", bytesWritten)
+	if uint64(FinalSegEnd)-bytesWritten > 0 {
+		pad4 := make([]byte, uint64(FinalSegEnd)-bytesWritten)
+		w.Write(pad4)
+		log.Printf("wrote pad of: %d", len(pad4))
+		bytesWritten += uint64(len(pad4))
+		log.Printf("Bytes written: %d", bytesWritten)
+		w.Flush()
+	}
 
 	w.Flush()
 	log.Println("All done!")

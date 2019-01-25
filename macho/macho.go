@@ -102,6 +102,7 @@ var cmdStrings = []intName{
 	{uint32(LoadCmdDylib), "LoadCmdDylib"},
 	{uint32(LoadCmdSegment64), "LoadCmdSegment64"},
 	{uint32(LoadCmdRpath), "LoadCmdRpath"},
+	{uint32(LoadCmdSignature), "LoadCmdSignature"},
 }
 
 func (i LoadCmd) String() string   { return stringName(uint32(i), cmdStrings, false) }
@@ -140,6 +141,7 @@ type (
 
 	// A SigBlockCmd is a Mach-O symbol table command.
 	SigBlockCmd struct {
+		Cmd     LoadCmd
 		Len     uint32
 		Sigoff  uint32
 		Sigsize uint32

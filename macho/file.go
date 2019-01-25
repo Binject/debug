@@ -58,7 +58,6 @@ type SegmentHeader struct {
 }
 
 type SigBlock struct {
-	Cmd    LoadCmd
 	Len    uint32
 	Offset uint64
 	RawDat []byte
@@ -359,13 +358,16 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			if err := binary.Read(s, bo, &sigCmd); err != nil {
 				return nil, err
 			}
+			fmt.Printf("SigData: %+v\n", sigCmd)
 			sig := make([]byte, sigCmd.Sigsize)
 			if _, err := r.ReadAt(sig, int64(sigCmd.Sigoff)); err != nil {
 				return nil, err
 			}
-			f.SigBlock.Offset = uint64(sigCmd.Sigoff)
-			f.SigBlock.Len = sigCmd.Sigsize
-			f.SigBlock.RawDat = sig
+			var block SigBlock
+			block.Offset = uint64(sigCmd.Sigoff)
+			block.Len = sigCmd.Sigsize
+			block.RawDat = sig
+			f.SigBlock = &block
 			f.Loads[i] = LoadBytes(cmddat)
 
 		case LoadCmdDysymtab:
