@@ -87,13 +87,102 @@ func (machoFile *File) Write(destFile string) error {
 	//segname __LINKEDIT
 	//fileoff 12288
 
+	// Write Dynamic Loader Info if it exists
+	if machoFile.DylinkInfo != nil {
+		// Write Rebase if it exists
+		if len(machoFile.DylinkInfo.RebaseDat) > 0 {
+			log.Printf("Rebase Offset: %d", machoFile.DylinkInfo.RebaseOffset)
+			if int64(machoFile.DylinkInfo.RebaseOffset)-int64(bytesWritten) > 0 {
+				padA := make([]byte, machoFile.DylinkInfo.RebaseOffset-bytesWritten)
+				w.Write(padA)
+				log.Printf("wrote pad of: %d", len(padA))
+				bytesWritten += uint64(len(padA))
+				log.Printf("Bytes written: %d", bytesWritten)
+			}
+			log.Printf("Rebase: %+v \n", machoFile.DylinkInfo.RebaseDat)
+			w.Write(machoFile.DylinkInfo.RebaseDat)
+			log.Printf("Wrote raw Rebase, length of: %d", machoFile.DylinkInfo.RebaseLen)
+			bytesWritten += uint64(machoFile.DylinkInfo.RebaseLen)
+			log.Printf("Bytes written: %d", bytesWritten)
+			w.Flush()
+		}
+		//Binding
+		if len(machoFile.DylinkInfo.BindingInfoDat) > 0 {
+			log.Printf("Binding Offset: %d", machoFile.DylinkInfo.BindingInfoOffset)
+			if int64(machoFile.DylinkInfo.BindingInfoOffset)-int64(bytesWritten) > 0 {
+				padB := make([]byte, machoFile.DylinkInfo.BindingInfoOffset-bytesWritten)
+				w.Write(padB)
+				log.Printf("wrote pad of: %d", len(padB))
+				bytesWritten += uint64(len(padB))
+				log.Printf("Bytes written: %d", bytesWritten)
+			}
+			log.Printf("Binding Info: %+v \n", machoFile.DylinkInfo.BindingInfoDat)
+			w.Write(machoFile.DylinkInfo.BindingInfoDat)
+			log.Printf("Wrote raw Binding Info, length of: %d", machoFile.DylinkInfo.BindingInfoLen)
+			bytesWritten += uint64(machoFile.DylinkInfo.BindingInfoLen)
+			log.Printf("Bytes written: %d", bytesWritten)
+			w.Flush()
+		}
+		//Lazy
+		if len(machoFile.DylinkInfo.LazyBindingDat) > 0 {
+			log.Printf("Lazy Offset: %d", machoFile.DylinkInfo.LazyBindingOffset)
+			if int64(machoFile.DylinkInfo.LazyBindingOffset)-int64(bytesWritten) > 0 {
+				padD := make([]byte, machoFile.DylinkInfo.LazyBindingOffset-bytesWritten)
+				w.Write(padD)
+				log.Printf("wrote pad of: %d", len(padD))
+				bytesWritten += uint64(len(padD))
+				log.Printf("Bytes written: %d", bytesWritten)
+			}
+			log.Printf("Lazy Binding Data: %+v \n", machoFile.DylinkInfo.LazyBindingDat)
+			w.Write(machoFile.DylinkInfo.LazyBindingDat)
+			log.Printf("Wrote raw lazybinding, length of: %d", machoFile.DylinkInfo.LazyBindingLen)
+			bytesWritten += uint64(machoFile.DylinkInfo.LazyBindingLen)
+			log.Printf("Bytes written: %d", bytesWritten)
+			w.Flush()
+		}
+		//Export
+		if len(machoFile.DylinkInfo.ExportInfoDat) > 0 {
+			log.Printf("Export Offset: %d", machoFile.DylinkInfo.ExportInfoOffset)
+			if int64(machoFile.DylinkInfo.ExportInfoOffset)-int64(bytesWritten) > 0 {
+				padE := make([]byte, machoFile.DylinkInfo.ExportInfoOffset-bytesWritten)
+				w.Write(padE)
+				log.Printf("wrote pad of: %d", len(padE))
+				bytesWritten += uint64(len(padE))
+				log.Printf("Bytes written: %d", bytesWritten)
+			}
+			log.Printf("Export Info: %+v \n", machoFile.DylinkInfo.ExportInfoDat)
+			w.Write(machoFile.DylinkInfo.ExportInfoDat)
+			log.Printf("Wrote raw Export Info, length of: %d", machoFile.DylinkInfo.ExportInfoLen)
+			bytesWritten += uint64(machoFile.DylinkInfo.ExportInfoLen)
+			log.Printf("Bytes written: %d", bytesWritten)
+			w.Flush()
+		}
+		//Weak
+		if len(machoFile.DylinkInfo.WeakBindingDat) > 0 {
+			log.Printf("Weak Offset: %d", machoFile.DylinkInfo.WeakBindingOffset)
+			if int64(machoFile.DylinkInfo.WeakBindingOffset)-int64(bytesWritten) > 0 {
+				padC := make([]byte, machoFile.DylinkInfo.WeakBindingOffset-bytesWritten)
+				w.Write(padC)
+				log.Printf("wrote pad of: %d", len(padC))
+				bytesWritten += uint64(len(padC))
+				log.Printf("Bytes written: %d", bytesWritten)
+			}
+			log.Printf("Weak Binding: %+v \n", machoFile.DylinkInfo.WeakBindingDat)
+			w.Write(machoFile.DylinkInfo.WeakBindingDat)
+			log.Printf("Wrote raw Weak Binding, length of: %d", machoFile.DylinkInfo.WeakBindingLen)
+			bytesWritten += uint64(machoFile.DylinkInfo.WeakBindingLen)
+			log.Printf("Bytes written: %d", bytesWritten)
+			w.Flush()
+		}
+	}
+
 	// Write the Func Starts if they exist
 	if machoFile.FuncStarts != nil {
 		log.Printf("new pad: %d", machoFile.FuncStarts.Offset-bytesWritten)
 		if int64(machoFile.FuncStarts.Offset)-int64(bytesWritten) > 0 {
 			padY := make([]byte, machoFile.FuncStarts.Offset-bytesWritten)
 			w.Write(padY)
-			log.Printf("wrote pad of: %d", padY)
+			log.Printf("wrote pad of: %d", len(padY))
 			bytesWritten += uint64(len(padY))
 			log.Printf("Bytes written: %d", bytesWritten)
 		}
@@ -110,7 +199,7 @@ func (machoFile *File) Write(destFile string) error {
 		if int64(machoFile.DataInCode.Offset)-int64(bytesWritten) > 0 {
 			padZ := make([]byte, machoFile.DataInCode.Offset-bytesWritten)
 			w.Write(padZ)
-			log.Printf("wrote pad of: %d", padZ)
+			log.Printf("wrote pad of: %d", len(padZ))
 			bytesWritten += uint64(len(padZ))
 			log.Printf("Bytes written: %d", bytesWritten)
 		}
@@ -122,8 +211,6 @@ func (machoFile *File) Write(destFile string) error {
 		w.Flush()
 	}
 
-	// Write Dynamic Loader Info
-
 	// Write Symbols is next I think
 	symtab := machoFile.Symtab
 	log.Printf("Bytes written: %d", bytesWritten)
@@ -131,37 +218,39 @@ func (machoFile *File) Write(destFile string) error {
 	log.Printf("Locrel offset: %d", machoFile.Dysymtab.Locreloff)
 	log.Printf("Symtab offset: %d", symtab.Symoff)
 	log.Printf("String table offset: %d", symtab.Stroff)
-	pad := make([]byte, uint64(symtab.Symoff)-bytesWritten)
-	w.Write(pad)
-	log.Printf("wrote pad of: %d", uint64(symtab.Symoff)-bytesWritten)
-	bytesWritten += (uint64(symtab.Symoff) - bytesWritten)
-
+	if int64(symtab.Symoff)-int64(bytesWritten) > 0 {
+		pad := make([]byte, uint64(symtab.Symoff)-bytesWritten)
+		w.Write(pad)
+		log.Printf("wrote pad of: %d", uint64(symtab.Symoff)-bytesWritten)
+		bytesWritten += (uint64(symtab.Symoff) - bytesWritten)
+	}
 	w.Write(symtab.RawSymtab)
 	log.Printf("Wrote raw symtab, length of: %d", len(symtab.RawSymtab))
 	bytesWritten += uint64(len(symtab.RawSymtab))
 	log.Printf("Bytes written: %d", bytesWritten)
 
-	//log.Printf("SymTab info: %+v", symtab)
-	//log.Printf("padding: %d", (uint64(symtab.Symoff) - bytesWritten))
-
 	// Write DySymTab next!
 	dysymtab := machoFile.Dysymtab
-	pad2 := make([]byte, uint64(dysymtab.Indirectsymoff)-bytesWritten)
-	w.Write(pad2)
-	log.Printf("wrote pad of: %d", pad2)
-	bytesWritten += uint64(len(pad2))
-	log.Printf("Bytes written: %d", bytesWritten)
+	if int64(dysymtab.Indirectsymoff)-int64(bytesWritten) > 0 {
+		pad2 := make([]byte, uint64(dysymtab.Indirectsymoff)-bytesWritten)
+		w.Write(pad2)
+		log.Printf("wrote pad of: %d", len(pad2))
+		bytesWritten += uint64(len(pad2))
+		log.Printf("Bytes written: %d", bytesWritten)
+	}
 	w.Write(dysymtab.RawDysymtab)
 	log.Printf("Wrote raw indirect symbols, length of: %d", len(dysymtab.RawDysymtab))
 	bytesWritten += uint64(len(dysymtab.RawDysymtab))
 	log.Printf("Bytes written: %d", bytesWritten)
 
 	// Write StringTab!
-	pad3 := make([]byte, uint64(symtab.Stroff)-bytesWritten)
-	w.Write(pad3)
-	log.Printf("wrote pad of: %d", pad3)
-	bytesWritten += uint64(len(pad3))
-	log.Printf("Bytes written: %d", bytesWritten)
+	if int64(symtab.Stroff)-int64(bytesWritten) > 0 {
+		pad3 := make([]byte, uint64(symtab.Stroff)-bytesWritten)
+		w.Write(pad3)
+		log.Printf("wrote pad of: %d", len(pad3))
+		bytesWritten += uint64(len(pad3))
+		log.Printf("Bytes written: %d", bytesWritten)
+	}
 	w.Write(symtab.RawStringtab)
 	log.Printf("Wrote raw stringtab, length of: %d", len(symtab.RawStringtab))
 	bytesWritten += uint64(len(symtab.RawStringtab))
@@ -169,14 +258,15 @@ func (machoFile *File) Write(destFile string) error {
 	w.Flush()
 
 	// Write The Signature Block, if it exists
-
 	//log.Printf("SigBlock Dat: %v", machoFile.SigBlock)
 	if machoFile.SigBlock != nil {
-		padX := make([]byte, machoFile.SigBlock.Offset-bytesWritten)
-		w.Write(padX)
-		log.Printf("wrote pad of: %d", padX)
-		bytesWritten += uint64(len(padX))
-		log.Printf("Bytes written: %d", bytesWritten)
+		if int64(machoFile.SigBlock.Offset)-int64(bytesWritten) > 0 {
+			padX := make([]byte, int64(machoFile.SigBlock.Offset)-int64(bytesWritten))
+			w.Write(padX)
+			log.Printf("wrote pad of: %d", len(padX))
+			bytesWritten += uint64(len(padX))
+			log.Printf("Bytes written: %d", bytesWritten)
+		}
 		w.Write(machoFile.SigBlock.RawDat)
 		log.Printf("Wrote raw sigblock, length of: %d", machoFile.SigBlock.Len)
 		bytesWritten += uint64(machoFile.SigBlock.Len)

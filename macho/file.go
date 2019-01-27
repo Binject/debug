@@ -439,6 +439,69 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			f.DataInCode = &datacode
 			f.Loads[i] = LoadBytes(cmddat)
 
+		case LoadCmdDylinkInfo:
+			var dylinkInfoCmd DylinkInfoCmd
+			dic := bytes.NewReader(cmddat)
+			if err := binary.Read(dic, bo, &dylinkInfoCmd); err != nil {
+				return nil, err
+			}
+			fmt.Printf("LoadCmdDylinkInfo: %+v\n", dylinkInfoCmd)
+			// Copy each section next
+			var dylinkInfo DylinkInfo
+			// Rebase deets
+			if dylinkInfoCmd.Rebasesize > 0 {
+				rebase := make([]byte, dylinkInfoCmd.Rebasesize)
+				if _, err := r.ReadAt(rebase, int64(dylinkInfoCmd.Rebaseoff)); err != nil {
+					return nil, err
+				}
+				dylinkInfo.RebaseLen = dylinkInfoCmd.Rebasesize
+				dylinkInfo.RebaseOffset = uint64(dylinkInfoCmd.Rebaseoff)
+				dylinkInfo.RebaseDat = rebase
+			}
+			// BindingInfo deets
+			if dylinkInfoCmd.Bindinginfosize > 0 {
+				binding := make([]byte, dylinkInfoCmd.Bindinginfosize)
+				if _, err := r.ReadAt(binding, int64(dylinkInfoCmd.Bindinginfooff)); err != nil {
+					return nil, err
+				}
+				dylinkInfo.BindingInfoLen = dylinkInfoCmd.Bindinginfosize
+				dylinkInfo.BindingInfoOffset = uint64(dylinkInfoCmd.Bindinginfooff)
+				dylinkInfo.BindingInfoDat = binding
+			}
+			// Weak deets
+			if dylinkInfoCmd.Weakbindingsize > 0 {
+				weak := make([]byte, dylinkInfoCmd.Weakbindingsize)
+				if _, err := r.ReadAt(weak, int64(dylinkInfoCmd.Weakbindingoff)); err != nil {
+					return nil, err
+				}
+				dylinkInfo.WeakBindingLen = dylinkInfoCmd.Weakbindingsize
+				dylinkInfo.WeakBindingOffset = uint64(dylinkInfoCmd.Weakbindingoff)
+				dylinkInfo.WeakBindingDat = weak
+			}
+			// Lazy deets
+			if dylinkInfoCmd.Lazybindingsize > 0 {
+				lazy := make([]byte, dylinkInfoCmd.Lazybindingsize)
+				if _, err := r.ReadAt(lazy, int64(dylinkInfoCmd.Lazybindingoff)); err != nil {
+					return nil, err
+				}
+				dylinkInfo.LazyBindingLen = dylinkInfoCmd.Lazybindingsize
+				dylinkInfo.LazyBindingOffset = uint64(dylinkInfoCmd.Lazybindingoff)
+				dylinkInfo.LazyBindingDat = lazy
+			}
+			// ExportInfo deets
+			if dylinkInfoCmd.Exportinfosize > 0 {
+				export := make([]byte, dylinkInfoCmd.Exportinfosize)
+				if _, err := r.ReadAt(export, int64(dylinkInfoCmd.Exportinfooff)); err != nil {
+					return nil, err
+				}
+				dylinkInfo.ExportInfoLen = dylinkInfoCmd.Exportinfosize
+				dylinkInfo.ExportInfoOffset = uint64(dylinkInfoCmd.Exportinfooff)
+				dylinkInfo.ExportInfoDat = export
+			}
+			// Finalize the object
+			f.DylinkInfo = &dylinkInfo
+			f.Loads[i] = LoadBytes(cmddat)
+
 		case LoadCmdDysymtab:
 			var hdr DysymtabCmd
 			b := bytes.NewReader(cmddat)
