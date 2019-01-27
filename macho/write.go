@@ -87,9 +87,40 @@ func (machoFile *File) Write(destFile string) error {
 	//segname __LINKEDIT
 	//fileoff 12288
 
-	// Write Something Here!
-	// Load command 4
-	// cmd LC_DYLD_INFO_ONLY
+	// Write the Func Starts if they exist
+	if machoFile.FuncStarts != nil {
+		log.Printf("new pad: %d", machoFile.FuncStarts.Offset-bytesWritten)
+		if int64(machoFile.FuncStarts.Offset)-int64(bytesWritten) > 0 {
+			padY := make([]byte, machoFile.FuncStarts.Offset-bytesWritten)
+			w.Write(padY)
+			log.Printf("wrote pad of: %d", padY)
+			bytesWritten += uint64(len(padY))
+			log.Printf("Bytes written: %d", bytesWritten)
+		}
+		log.Printf("FuncStarts: %+v \n", machoFile.FuncStarts)
+		w.Write(machoFile.FuncStarts.RawDat)
+		log.Printf("Wrote raw funcstarts, length of: %d", machoFile.FuncStarts.Len)
+		bytesWritten += uint64(machoFile.FuncStarts.Len)
+		log.Printf("Bytes written: %d", bytesWritten)
+		w.Flush()
+	}
+
+	// Write the Data in Code Entries if they exist
+	if machoFile.DataInCode != nil {
+		if int64(machoFile.DataInCode.Offset)-int64(bytesWritten) > 0 {
+			padZ := make([]byte, machoFile.DataInCode.Offset-bytesWritten)
+			w.Write(padZ)
+			log.Printf("wrote pad of: %d", padZ)
+			bytesWritten += uint64(len(padZ))
+			log.Printf("Bytes written: %d", bytesWritten)
+		}
+		log.Printf("DataInCode: %+v \n", machoFile.DataInCode)
+		w.Write(machoFile.DataInCode.RawDat)
+		log.Printf("Wrote raw dataincode, length of: %d", machoFile.DataInCode.Len)
+		bytesWritten += uint64(machoFile.DataInCode.Len)
+		log.Printf("Bytes written: %d", bytesWritten)
+		w.Flush()
+	}
 
 	// Write Symbols is next I think
 	symtab := machoFile.Symtab
@@ -145,18 +176,14 @@ func (machoFile *File) Write(destFile string) error {
 		bytesWritten += uint64(len(padX))
 		log.Printf("Bytes written: %d", bytesWritten)
 		w.Write(machoFile.SigBlock.RawDat)
-		log.Printf("Wrote raw stringtab, length of: %d", machoFile.SigBlock.Len)
+		log.Printf("Wrote raw sigblock, length of: %d", machoFile.SigBlock.Len)
 		bytesWritten += uint64(machoFile.SigBlock.Len)
 		log.Printf("Bytes written: %d", bytesWritten)
 		w.Flush()
 	}
 
-	// Write the Signature
-	// Load command 15
-	// cmd LC_CODE_SIGNATURE
-
 	// Write 0s to the end of the final segment
-	if uint64(FinalSegEnd)-bytesWritten > 0 {
+	if int64(FinalSegEnd)-int64(bytesWritten) > 0 {
 		pad4 := make([]byte, uint64(FinalSegEnd)-bytesWritten)
 		w.Write(pad4)
 		log.Printf("wrote pad of: %d", len(pad4))
