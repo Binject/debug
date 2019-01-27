@@ -93,8 +93,10 @@ const (
 	LoadCmdSegment64  LoadCmd = 0x19
 	LoadCmdRpath      LoadCmd = 0x8000001c
 	LoadCmdSignature  LoadCmd = 0x1d
-	LoadCmdFuncStarts LoadCmd = 0x26 // Function Starts
-	LoadCmdDataInCode LoadCmd = 0x29 // Data In Code
+	LoadCmdFuncStarts LoadCmd = 0x26       // Function Starts
+	LoadCmdDataInCode LoadCmd = 0x29       // Data In Code
+	LoadCmdDylinkInfo LoadCmd = 0x80000022 // Dynamic Linker Info Only
+
 )
 
 var cmdStrings = []intName{
@@ -107,6 +109,7 @@ var cmdStrings = []intName{
 	{uint32(LoadCmdSignature), "LoadCmdSignature"},
 	{uint32(LoadCmdFuncStarts), "LoadCmdFuncStarts"},
 	{uint32(LoadCmdDataInCode), "LoadCmdDataInCode"},
+	{uint32(LoadCmdDylinkInfo), "LoadCmdDylinkInfo"},
 }
 
 func (i LoadCmd) String() string   { return stringName(uint32(i), cmdStrings, false) }
@@ -209,6 +212,22 @@ type (
 		Len      uint32
 		Dataoff  uint32
 		Datasize uint32
+	}
+
+	// A DylinkInfoCmd is a Mach-O load for Dynamic Linker Info Only Command
+	DylinkInfoCmd struct {
+		Cmd             LoadCmd
+		Len             uint32
+		Rebaseoff       uint32
+		Rebasesize      uint32
+		Bindinginfooff  uint32
+		Bindinginfosize uint32
+		Weakbindingoff  uint32
+		Weakbindingsize uint32
+		Lazybindingoff  uint32
+		Lazybindingsize uint32
+		Exportinfooff   uint32
+		Exportinfosize  uint32
 	}
 
 	// A RpathCmd is a Mach-O rpath command.

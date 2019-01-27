@@ -122,6 +122,8 @@ func (machoFile *File) Write(destFile string) error {
 		w.Flush()
 	}
 
+	// Write Dynamic Loader Info
+
 	// Write Symbols is next I think
 	symtab := machoFile.Symtab
 	log.Printf("Bytes written: %d", bytesWritten)

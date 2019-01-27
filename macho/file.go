@@ -30,6 +30,7 @@ type File struct {
 	SigBlock   *SigBlock
 	FuncStarts *FuncStarts
 	DataInCode *DataInCode
+	DylinkInfo *DylinkInfo
 
 	closer io.Closer
 }
@@ -75,6 +76,24 @@ type DataInCode struct {
 	Len    uint32
 	Offset uint64
 	RawDat []byte
+}
+
+type DylinkInfo struct {
+	RebaseLen         uint32
+	RebaseOffset      uint64
+	RebaseDat         []byte
+	BindingInfoLen    uint32
+	BindingInfoOffset uint64
+	BindingInfoDat    []byte
+	WeakBindingLen    uint32
+	WeakBindingOffset uint64
+	WeakBindingDat    []byte
+	LazyBindingLen    uint32
+	LazyBindingOffset uint64
+	LazyBindingDat    []byte
+	ExportInfoLen     uint32
+	ExportInfoOffset  uint64
+	ExportInfoDat     []byte
 }
 
 // A Segment represents a Mach-O 32-bit or 64-bit load segment command.
