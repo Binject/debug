@@ -93,6 +93,8 @@ const (
 	LoadCmdSegment64  LoadCmd = 0x19
 	LoadCmdRpath      LoadCmd = 0x8000001c
 	LoadCmdSignature  LoadCmd = 0x1d
+	LoadCmdFuncStarts LoadCmd = 0x27 // Function Starts
+	LoadCmdDataInCode LoadCmd = 0x29 // Data In Code
 )
 
 var cmdStrings = []intName{
@@ -103,6 +105,8 @@ var cmdStrings = []intName{
 	{uint32(LoadCmdSegment64), "LoadCmdSegment64"},
 	{uint32(LoadCmdRpath), "LoadCmdRpath"},
 	{uint32(LoadCmdSignature), "LoadCmdSignature"},
+	{uint32(LoadCmdFuncStarts), "LoadCmdFuncStarts"},
+	{uint32(LoadCmdDataInCode), "LoadCmdDataInCode"},
 }
 
 func (i LoadCmd) String() string   { return stringName(uint32(i), cmdStrings, false) }
@@ -189,6 +193,22 @@ type (
 		Time           uint32
 		CurrentVersion uint32
 		CompatVersion  uint32
+	}
+
+	// A FuncStartsCmd is a Mach-O load Function Starts command
+	FuncStartsCmd struct {
+		Cmd      LoadCmd
+		Len      uint32
+		Dataoff  uint32
+		Datasize uint32
+	}
+
+	// A DataInCodeCmd is a Mach-O load for Data In Code command
+	DataInCodeCmd struct {
+		Cmd      LoadCmd
+		Len      uint32
+		Dataoff  uint32
+		Datasize uint32
 	}
 
 	// A RpathCmd is a Mach-O rpath command.
