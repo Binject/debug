@@ -25,9 +25,12 @@ type File struct {
 	Loads     []Load
 	Sections  []*Section
 
-	Symtab   *Symtab
-	Dysymtab *Dysymtab
-	SigBlock *SigBlock
+	Symtab     *Symtab
+	Dysymtab   *Dysymtab
+	SigBlock   *SigBlock
+	FuncStarts *FuncStarts
+	DataInCode *DataInCode
+	DylinkInfo *DylinkInfo
 
 	closer io.Closer
 }
@@ -61,6 +64,36 @@ type SigBlock struct {
 	Len    uint32
 	Offset uint64
 	RawDat []byte
+}
+
+type FuncStarts struct {
+	Len    uint32
+	Offset uint64
+	RawDat []byte
+}
+
+type DataInCode struct {
+	Len    uint32
+	Offset uint64
+	RawDat []byte
+}
+
+type DylinkInfo struct {
+	RebaseLen         uint32
+	RebaseOffset      uint64
+	RebaseDat         []byte
+	BindingInfoLen    uint32
+	BindingInfoOffset uint64
+	BindingInfoDat    []byte
+	WeakBindingLen    uint32
+	WeakBindingOffset uint64
+	WeakBindingDat    []byte
+	LazyBindingLen    uint32
+	LazyBindingOffset uint64
+	LazyBindingDat    []byte
+	ExportInfoLen     uint32
+	ExportInfoOffset  uint64
+	ExportInfoDat     []byte
 }
 
 // A Segment represents a Mach-O 32-bit or 64-bit load segment command.
@@ -358,7 +391,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			if err := binary.Read(s, bo, &sigCmd); err != nil {
 				return nil, err
 			}
-			fmt.Printf("SigData: %+v\n", sigCmd)
+			//fmt.Printf("SigData: %+v\n", sigCmd)
 			sig := make([]byte, sigCmd.Sigsize)
 			if _, err := r.ReadAt(sig, int64(sigCmd.Sigoff)); err != nil {
 				return nil, err
@@ -368,6 +401,105 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			block.Len = sigCmd.Sigsize
 			block.RawDat = sig
 			f.SigBlock = &block
+			f.Loads[i] = LoadBytes(cmddat)
+
+		case LoadCmdFuncStarts:
+			var funcCmd FuncStartsCmd
+			fsc := bytes.NewReader(cmddat)
+			if err := binary.Read(fsc, bo, &funcCmd); err != nil {
+				return nil, err
+			}
+			fmt.Printf("FuncStartsData: %+v\n", funcCmd)
+			fs := make([]byte, funcCmd.Datasize)
+			if _, err := r.ReadAt(fs, int64(funcCmd.Dataoff)); err != nil {
+				return nil, err
+			}
+			var funcs FuncStarts
+			funcs.Offset = uint64(funcCmd.Dataoff)
+			funcs.Len = funcCmd.Datasize
+			funcs.RawDat = fs
+			f.FuncStarts = &funcs
+			f.Loads[i] = LoadBytes(cmddat)
+
+		case LoadCmdDataInCode:
+			var dataCmd DataInCodeCmd
+			dcc := bytes.NewReader(cmddat)
+			if err := binary.Read(dcc, bo, &dataCmd); err != nil {
+				return nil, err
+			}
+			fmt.Printf("DataInCode: %+v\n", dataCmd)
+			dc := make([]byte, dataCmd.Datasize)
+			if _, err := r.ReadAt(dc, int64(dataCmd.Dataoff)); err != nil {
+				return nil, err
+			}
+			var datacode DataInCode
+			datacode.Offset = uint64(dataCmd.Dataoff)
+			datacode.Len = dataCmd.Datasize
+			datacode.RawDat = dc
+			f.DataInCode = &datacode
+			f.Loads[i] = LoadBytes(cmddat)
+
+		case LoadCmdDylinkInfo:
+			var dylinkInfoCmd DylinkInfoCmd
+			dic := bytes.NewReader(cmddat)
+			if err := binary.Read(dic, bo, &dylinkInfoCmd); err != nil {
+				return nil, err
+			}
+			fmt.Printf("LoadCmdDylinkInfo: %+v\n", dylinkInfoCmd)
+			// Copy each section next
+			var dylinkInfo DylinkInfo
+			// Rebase deets
+			if dylinkInfoCmd.Rebasesize > 0 {
+				rebase := make([]byte, dylinkInfoCmd.Rebasesize)
+				if _, err := r.ReadAt(rebase, int64(dylinkInfoCmd.Rebaseoff)); err != nil {
+					return nil, err
+				}
+				dylinkInfo.RebaseLen = dylinkInfoCmd.Rebasesize
+				dylinkInfo.RebaseOffset = uint64(dylinkInfoCmd.Rebaseoff)
+				dylinkInfo.RebaseDat = rebase
+			}
+			// BindingInfo deets
+			if dylinkInfoCmd.Bindinginfosize > 0 {
+				binding := make([]byte, dylinkInfoCmd.Bindinginfosize)
+				if _, err := r.ReadAt(binding, int64(dylinkInfoCmd.Bindinginfooff)); err != nil {
+					return nil, err
+				}
+				dylinkInfo.BindingInfoLen = dylinkInfoCmd.Bindinginfosize
+				dylinkInfo.BindingInfoOffset = uint64(dylinkInfoCmd.Bindinginfooff)
+				dylinkInfo.BindingInfoDat = binding
+			}
+			// Weak deets
+			if dylinkInfoCmd.Weakbindingsize > 0 {
+				weak := make([]byte, dylinkInfoCmd.Weakbindingsize)
+				if _, err := r.ReadAt(weak, int64(dylinkInfoCmd.Weakbindingoff)); err != nil {
+					return nil, err
+				}
+				dylinkInfo.WeakBindingLen = dylinkInfoCmd.Weakbindingsize
+				dylinkInfo.WeakBindingOffset = uint64(dylinkInfoCmd.Weakbindingoff)
+				dylinkInfo.WeakBindingDat = weak
+			}
+			// Lazy deets
+			if dylinkInfoCmd.Lazybindingsize > 0 {
+				lazy := make([]byte, dylinkInfoCmd.Lazybindingsize)
+				if _, err := r.ReadAt(lazy, int64(dylinkInfoCmd.Lazybindingoff)); err != nil {
+					return nil, err
+				}
+				dylinkInfo.LazyBindingLen = dylinkInfoCmd.Lazybindingsize
+				dylinkInfo.LazyBindingOffset = uint64(dylinkInfoCmd.Lazybindingoff)
+				dylinkInfo.LazyBindingDat = lazy
+			}
+			// ExportInfo deets
+			if dylinkInfoCmd.Exportinfosize > 0 {
+				export := make([]byte, dylinkInfoCmd.Exportinfosize)
+				if _, err := r.ReadAt(export, int64(dylinkInfoCmd.Exportinfooff)); err != nil {
+					return nil, err
+				}
+				dylinkInfo.ExportInfoLen = dylinkInfoCmd.Exportinfosize
+				dylinkInfo.ExportInfoOffset = uint64(dylinkInfoCmd.Exportinfooff)
+				dylinkInfo.ExportInfoDat = export
+			}
+			// Finalize the object
+			f.DylinkInfo = &dylinkInfo
 			f.Loads[i] = LoadBytes(cmddat)
 
 		case LoadCmdDysymtab:
