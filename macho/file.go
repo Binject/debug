@@ -25,9 +25,11 @@ type File struct {
 	Loads     []Load
 	Sections  []*Section
 
-	Symtab   *Symtab
-	Dysymtab *Dysymtab
-	SigBlock *SigBlock
+	Symtab     *Symtab
+	Dysymtab   *Dysymtab
+	SigBlock   *SigBlock
+	FuncStarts *FuncStarts
+	DataInCode *DataInCode
 
 	closer io.Closer
 }
@@ -58,6 +60,18 @@ type SegmentHeader struct {
 }
 
 type SigBlock struct {
+	Len    uint32
+	Offset uint64
+	RawDat []byte
+}
+
+type FuncStarts struct {
+	Len    uint32
+	Offset uint64
+	RawDat []byte
+}
+
+type DataInCode struct {
 	Len    uint32
 	Offset uint64
 	RawDat []byte
@@ -358,7 +372,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			if err := binary.Read(s, bo, &sigCmd); err != nil {
 				return nil, err
 			}
-			fmt.Printf("SigData: %+v\n", sigCmd)
+			//fmt.Printf("SigData: %+v\n", sigCmd)
 			sig := make([]byte, sigCmd.Sigsize)
 			if _, err := r.ReadAt(sig, int64(sigCmd.Sigoff)); err != nil {
 				return nil, err
@@ -368,6 +382,42 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			block.Len = sigCmd.Sigsize
 			block.RawDat = sig
 			f.SigBlock = &block
+			f.Loads[i] = LoadBytes(cmddat)
+
+		case LoadCmdFuncStarts:
+			var funcCmd FuncStartsCmd
+			fsc := bytes.NewReader(cmddat)
+			if err := binary.Read(fsc, bo, &funcCmd); err != nil {
+				return nil, err
+			}
+			fmt.Printf("FuncStartsData: %+v\n", funcCmd)
+			fs := make([]byte, funcCmd.Datasize)
+			if _, err := r.ReadAt(fs, int64(funcCmd.Dataoff)); err != nil {
+				return nil, err
+			}
+			var funcs FuncStarts
+			funcs.Offset = uint64(funcCmd.Dataoff)
+			funcs.Len = funcCmd.Datasize
+			funcs.RawDat = fs
+			f.FuncStarts = &funcs
+			f.Loads[i] = LoadBytes(cmddat)
+
+		case LoadCmdDataInCode:
+			var dataCmd DataInCodeCmd
+			dcc := bytes.NewReader(cmddat)
+			if err := binary.Read(dcc, bo, &dataCmd); err != nil {
+				return nil, err
+			}
+			fmt.Printf("DataInCode: %+v\n", dataCmd)
+			dc := make([]byte, dataCmd.Datasize)
+			if _, err := r.ReadAt(dc, int64(dataCmd.Dataoff)); err != nil {
+				return nil, err
+			}
+			var datacode DataInCode
+			datacode.Offset = uint64(dataCmd.Dataoff)
+			datacode.Len = dataCmd.Datasize
+			datacode.RawDat = dc
+			f.DataInCode = &datacode
 			f.Loads[i] = LoadBytes(cmddat)
 
 		case LoadCmdDysymtab:

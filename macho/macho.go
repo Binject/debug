@@ -93,7 +93,7 @@ const (
 	LoadCmdSegment64  LoadCmd = 0x19
 	LoadCmdRpath      LoadCmd = 0x8000001c
 	LoadCmdSignature  LoadCmd = 0x1d
-	LoadCmdFuncStarts LoadCmd = 0x27 // Function Starts
+	LoadCmdFuncStarts LoadCmd = 0x26 // Function Starts
 	LoadCmdDataInCode LoadCmd = 0x29 // Data In Code
 )
 
