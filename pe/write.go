@@ -29,6 +29,7 @@ func (peFile *File) Write(destFile string) error {
 		bytesWritten += uint64(len(peFile.RichHeader))
 	}
 
+	// apply padding before PE header if necessary
 	if uint32(bytesWritten) != peFile.DosHeader.AddressOfNewExeHeader {
 		padding := make([]byte, peFile.DosHeader.AddressOfNewExeHeader - uint32(bytesWritten))
 		binary.Write(w, binary.LittleEndian, padding)
@@ -103,22 +104,20 @@ func (peFile *File) Write(destFile string) error {
 	bytesWritten += uint64(binary.Size(peFile.StringTable))
 
 	// write the certificate table
-	_, certTableOffset, certTableSize, err := getCertTableInfo(peFile)
-	if err != nil {
-		return err
-	}
-	if certTableOffset != 0 && certTableSize != 0 {
-		var certTable []byte
-		// if certificate table doesn't immediately follow the end of the PE, pad the
-		// space in between with null bytes
-		if certTableOffset != int64(bytesWritten) {
-			paddingSize := certTableOffset - int64(bytesWritten)
-			padding := make([]byte, paddingSize, paddingSize)
-			certTable = append(padding, certTable...)
+	if peFile.CertificateTable != nil {
+		switch peFile.FileHeader.Machine {
+		case IMAGE_FILE_MACHINE_I386:
+			peFile.OptionalHeader.(*OptionalHeader32).DataDirectory[CERTIFICATE_TABLE].VirtualAddress = uint32(bytesWritten)
+			peFile.OptionalHeader.(*OptionalHeader32).DataDirectory[CERTIFICATE_TABLE].Size = uint32(len(peFile.CertificateTable))
+		case IMAGE_FILE_MACHINE_AMD64:
+			peFile.OptionalHeader.(*OptionalHeader64).DataDirectory[CERTIFICATE_TABLE].VirtualAddress = uint32(bytesWritten)
+			peFile.OptionalHeader.(*OptionalHeader64).DataDirectory[CERTIFICATE_TABLE].Size = uint32(len(peFile.CertificateTable))
+		default:
+			return errors.New("architecture not supported")
 		}
-		certTable = append(certTable, peFile.CertificateTable...)
-		binary.Write(w, binary.LittleEndian, certTable)
-		bytesWritten += uint64(len(certTable))
+
+		binary.Write(w, binary.LittleEndian, peFile.CertificateTable)
+		bytesWritten += uint64(len(peFile.CertificateTable))
 	}
 
 	w.Flush()
