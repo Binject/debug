@@ -23,6 +23,18 @@ func (peFile *File) Write(destFile string) error {
 	binary.Write(w, binary.LittleEndian, peFile.DosStub)
 	bytesWritten += uint64(binary.Size(peFile.DosStub))
 
+	// write Rich header
+	if peFile.RichHeader != nil {
+		binary.Write(w, binary.LittleEndian, peFile.RichHeader)
+		bytesWritten += uint64(len(peFile.RichHeader))
+
+		if uint32(bytesWritten) != peFile.DosHeader.AddressOfNewExeHeader {
+			padding := make([]byte, peFile.DosHeader.AddressOfNewExeHeader - uint32(bytesWritten))
+			binary.Write(w, binary.LittleEndian, padding)
+			bytesWritten += uint64(len(padding))
+		}
+	}
+
 	// write PE header
 	peMagic := []byte{'P', 'E', 0x00, 0x00}
 	binary.Write(w, binary.LittleEndian, peMagic)
@@ -97,6 +109,8 @@ func (peFile *File) Write(destFile string) error {
 	}
 	if certTableOffset != 0 && certTableSize != 0 {
 		var certTable []byte
+		// if certificate table doesn't immediately follow the end of the PE, pad the
+		// space in between with null bytes
 		if certTableOffset != int64(bytesWritten) {
 			paddingSize := certTableOffset - int64(bytesWritten)
 			padding := make([]byte, paddingSize, paddingSize)

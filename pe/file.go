@@ -76,6 +76,15 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	binary.Read(sr, binary.LittleEndian, &f.DosHeader)
 	binary.Read(sr, binary.LittleEndian, &f.DosStub)
 
+	possibleRichHeaderStart := (binary.Size(f.DosHeader) + binary.Size(f.DosStub))
+	possibleRichHeaderEnd := int(f.DosHeader.AddressOfNewExeHeader)
+	richHeader := make([]byte, possibleRichHeaderEnd - possibleRichHeaderStart)
+	binary.Read(sr, binary.LittleEndian, richHeader)
+
+	if richIndex := bytes.Index(richHeader, []byte("Rich")); richIndex != -1 {
+		f.RichHeader = richHeader[:richIndex + 8]
+	}
+
 	var peHeaderOffset int64
 	if f.DosHeader.MZSignature == 0x5a4d {
 		peHeaderOffset = int64(f.DosHeader.AddressOfNewExeHeader)
