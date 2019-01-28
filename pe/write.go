@@ -27,12 +27,12 @@ func (peFile *File) Write(destFile string) error {
 	if peFile.RichHeader != nil {
 		binary.Write(w, binary.LittleEndian, peFile.RichHeader)
 		bytesWritten += uint64(len(peFile.RichHeader))
+	}
 
-		if uint32(bytesWritten) != peFile.DosHeader.AddressOfNewExeHeader {
-			padding := make([]byte, peFile.DosHeader.AddressOfNewExeHeader - uint32(bytesWritten))
-			binary.Write(w, binary.LittleEndian, padding)
-			bytesWritten += uint64(len(padding))
-		}
+	if uint32(bytesWritten) != peFile.DosHeader.AddressOfNewExeHeader {
+		padding := make([]byte, peFile.DosHeader.AddressOfNewExeHeader - uint32(bytesWritten))
+		binary.Write(w, binary.LittleEndian, padding)
+		bytesWritten += uint64(len(padding))
 	}
 
 	// write PE header
