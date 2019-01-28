@@ -36,18 +36,28 @@ func (peFile *File) Bytes() ([]byte, error) {
 	binary.Write(peBuf, binary.LittleEndian, peFile.FileHeader)
 	bytesWritten += uint64(binary.Size(peFile.FileHeader) + len(peMagic))
 
-	var is32bit bool
+	var (
+		is32bit bool
+		oldCertTableOffset, oldCertTableSize uint32
+	)
+
 	switch peFile.FileHeader.Machine {
 	case IMAGE_FILE_MACHINE_I386:
 		is32bit = true
 		optionalHeader := peFile.OptionalHeader.(*OptionalHeader32)
 		binary.Write(peBuf, binary.LittleEndian, peFile.OptionalHeader.(*OptionalHeader32))
 		bytesWritten += uint64(binary.Size(optionalHeader))
+
+		oldCertTableOffset = optionalHeader.DataDirectory[CERTIFICATE_TABLE].VirtualAddress
+		oldCertTableSize = optionalHeader.DataDirectory[CERTIFICATE_TABLE].Size
 	case IMAGE_FILE_MACHINE_AMD64:
 		is32bit = false
 		optionalHeader := peFile.OptionalHeader.(*OptionalHeader64)
 		binary.Write(peBuf, binary.LittleEndian, optionalHeader)
 		bytesWritten += uint64(binary.Size(optionalHeader))
+
+		oldCertTableOffset = optionalHeader.DataDirectory[CERTIFICATE_TABLE].VirtualAddress
+		oldCertTableSize = optionalHeader.DataDirectory[CERTIFICATE_TABLE].Size
 	default:
 		return nil, errors.New("architecture not supported")
 	}
@@ -100,37 +110,41 @@ func (peFile *File) Bytes() ([]byte, error) {
 	binary.Write(peBuf, binary.LittleEndian, peFile.StringTable)
 	bytesWritten += uint64(binary.Size(peFile.StringTable))
 
-	var certTableOffset, certTableSize uint32
+	var newCertTableOffset, newCertTableSize uint32
 
 	// write the certificate table
 	if peFile.CertificateTable != nil {
-		certTableOffset = uint32(bytesWritten)
-		certTableSize = uint32(len(peFile.CertificateTable))
+		newCertTableOffset = uint32(bytesWritten)
+		newCertTableSize = uint32(len(peFile.CertificateTable))
 	} else {
-		certTableOffset = 0
-		certTableSize = 0
-	}
-
-	var certTableLoc int64
-	if is32bit {
-		certTableLoc = int64(peFile.DosHeader.AddressOfNewExeHeader) + 24 + 128
-	} else {
-		certTableLoc = int64(peFile.DosHeader.AddressOfNewExeHeader) + 24 + 144
+		newCertTableOffset = 0
+		newCertTableSize = 0
 	}
 
 	binary.Write(peBuf, binary.LittleEndian, peFile.CertificateTable)
 	bytesWritten += uint64(len(peFile.CertificateTable))
 
 	peData := peBuf.Bytes()
-	certTableInfo := &DataDirectory{
-		VirtualAddress: certTableOffset,
-		Size:           certTableSize,
-	}
 
-	// write the offset and size of the new Certificate Table
-	var certTableInfoBuf bytes.Buffer
-	binary.Write(&certTableInfoBuf, binary.LittleEndian, certTableInfo)
-	peData = append(peData[:certTableLoc], append(certTableInfoBuf.Bytes(), peData[int(certTableLoc) + binary.Size(certTableInfo):]...)...)
+	// write the offset and size of the new Certificate Table if it changed
+	if newCertTableOffset != oldCertTableOffset || newCertTableSize != oldCertTableSize {
+		certTableInfo := &DataDirectory{
+			VirtualAddress: newCertTableOffset,
+			Size:           newCertTableSize,
+		}
+
+		var certTableInfoBuf bytes.Buffer
+		binary.Write(&certTableInfoBuf, binary.LittleEndian, certTableInfo)
+
+		var certTableLoc int64
+		if is32bit {
+			certTableLoc = int64(peFile.DosHeader.AddressOfNewExeHeader) + 24 + 128
+		} else {
+			certTableLoc = int64(peFile.DosHeader.AddressOfNewExeHeader) + 24 + 144
+		}
+
+		peData = append(peData[:certTableLoc], append(certTableInfoBuf.Bytes(), peData[int(certTableLoc) + binary.Size(certTableInfo):]...)...)
+	}
 
 	return peData, nil
 }
