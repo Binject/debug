@@ -22,7 +22,8 @@ const seekStart = 0
 // A File represents an open PE file.
 type File struct {
 	DosHeader
-	DosStub		   	 [64]byte
+	DosStub		   	 [64]byte	 // TODO(capnspacehook) make slice and correctly parse any DOS stub
+	RichHeader		 []byte
 	FileHeader
 	OptionalHeader 	 interface{} // of type *OptionalHeader32 or *OptionalHeader64
 	Sections       	 []*Section
@@ -191,6 +192,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		}
 	}
 
+	// Read certificate table
 	f.CertificateTable, err = readCertTable(f, sr)
 	if err != nil {
 		return nil, err
