@@ -103,22 +103,30 @@ func (peFile *File) Write(destFile string) error {
 	binary.Write(w, binary.LittleEndian, peFile.StringTable)
 	bytesWritten += uint64(binary.Size(peFile.StringTable))
 
+	var certTableOffset, certTableSize uint32
+
 	// write the certificate table
 	if peFile.CertificateTable != nil {
-		switch peFile.FileHeader.Machine {
-		case IMAGE_FILE_MACHINE_I386:
-			peFile.OptionalHeader.(*OptionalHeader32).DataDirectory[CERTIFICATE_TABLE].VirtualAddress = uint32(bytesWritten)
-			peFile.OptionalHeader.(*OptionalHeader32).DataDirectory[CERTIFICATE_TABLE].Size = uint32(len(peFile.CertificateTable))
-		case IMAGE_FILE_MACHINE_AMD64:
-			peFile.OptionalHeader.(*OptionalHeader64).DataDirectory[CERTIFICATE_TABLE].VirtualAddress = uint32(bytesWritten)
-			peFile.OptionalHeader.(*OptionalHeader64).DataDirectory[CERTIFICATE_TABLE].Size = uint32(len(peFile.CertificateTable))
-		default:
-			return errors.New("architecture not supported")
-		}
-
-		binary.Write(w, binary.LittleEndian, peFile.CertificateTable)
-		bytesWritten += uint64(len(peFile.CertificateTable))
+		certTableOffset = uint32(bytesWritten)
+		certTableSize = uint32(len(peFile.CertificateTable))
+	} else {
+		certTableOffset = 0
+		certTableSize = 0
 	}
+
+	switch peFile.FileHeader.Machine {
+	case IMAGE_FILE_MACHINE_I386:
+		peFile.OptionalHeader.(*OptionalHeader32).DataDirectory[CERTIFICATE_TABLE].VirtualAddress = certTableOffset
+		peFile.OptionalHeader.(*OptionalHeader32).DataDirectory[CERTIFICATE_TABLE].Size = certTableSize
+	case IMAGE_FILE_MACHINE_AMD64:
+		peFile.OptionalHeader.(*OptionalHeader64).DataDirectory[CERTIFICATE_TABLE].VirtualAddress = certTableOffset
+		peFile.OptionalHeader.(*OptionalHeader64).DataDirectory[CERTIFICATE_TABLE].Size = certTableSize
+	default:
+		return errors.New("architecture not supported")
+	}
+
+	binary.Write(w, binary.LittleEndian, peFile.CertificateTable)
+	bytesWritten += uint64(len(peFile.CertificateTable))
 
 	w.Flush()
 
