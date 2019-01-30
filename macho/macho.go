@@ -115,6 +115,16 @@ var cmdStrings = []intName{
 func (i LoadCmd) String() string   { return stringName(uint32(i), cmdStrings, false) }
 func (i LoadCmd) GoString() string { return stringName(uint32(i), cmdStrings, true) }
 
+// Prog.Flag
+type ProgFlag uint32
+
+const (
+	PF_NONE ProgFlag = 0x0 /* None */
+	PF_R    ProgFlag = 0x1 /* Readable. */
+	PF_W    ProgFlag = 0x2 /* Writable. */
+	PF_X    ProgFlag = 0x4 /* Executable. */
+)
+
 type (
 	// A Segment32 is a 32-bit Mach-O segment load command.
 	Segment32 struct {
@@ -125,8 +135,8 @@ type (
 		Memsz   uint32
 		Offset  uint32
 		Filesz  uint32
-		Maxprot uint32
-		Prot    uint32
+		Maxprot uint32 // ProgFlag - Maximum Segment Virtual Memory Protections
+		Prot    uint32 // ProgFlag - Initial Segment Virtual Memory Protections
 		Nsect   uint32
 		Flag    uint32
 	}
