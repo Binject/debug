@@ -50,9 +50,20 @@ func (machoFile *File) Write(destFile string) error {
 	}
 	w.Flush()
 
-	// Write Sections
+	// Sort Sections
 	sortedSections := machoFile.Sections[:]
 	sort.Slice(sortedSections, func(a, b int) bool { return machoFile.Sections[a].Offset < machoFile.Sections[b].Offset })
+	// Shellcode gets caved in between the final load command and the first section
+	var caveOffset, caveSize uint64
+	for _, s := range sortedSections {
+		if s.SectionHeader.Seg == "__TEXT" && s.Name == "__text" {
+			caveOffset = bytesWritten
+			caveSize = uint64(s.Offset) - caveOffset
+			log.Printf("Code Cave Size: %d - %d = %d\n", s.Offset, caveOffset, caveSize)
+		}
+	}
+
+	// Write Sections
 	for _, s := range sortedSections {
 
 		if bytesWritten > uint64(s.Offset) {
