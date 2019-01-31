@@ -320,7 +320,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		cmddat, dat = dat[0:siz], dat[siz:]
 		offset += int64(siz)
 		var s *Segment
-		fmt.Printf("LoadCmdVal: %+v\n", cmd)
+		//fmt.Printf("LoadCmdVal: %+v\n", cmd)
 		switch cmd {
 		default:
 			f.Loads[i] = LoadBytes(cmddat)
@@ -409,7 +409,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			if err := binary.Read(fsc, bo, &funcCmd); err != nil {
 				return nil, err
 			}
-			fmt.Printf("FuncStartsData: %+v\n", funcCmd)
+			//fmt.Printf("FuncStartsData: %+v\n", funcCmd)
 			fs := make([]byte, funcCmd.Datasize)
 			if _, err := r.ReadAt(fs, int64(funcCmd.Dataoff)); err != nil {
 				return nil, err
@@ -427,7 +427,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			if err := binary.Read(dcc, bo, &dataCmd); err != nil {
 				return nil, err
 			}
-			fmt.Printf("DataInCode: %+v\n", dataCmd)
+			//fmt.Printf("DataInCode: %+v\n", dataCmd)
 			dc := make([]byte, dataCmd.Datasize)
 			if _, err := r.ReadAt(dc, int64(dataCmd.Dataoff)); err != nil {
 				return nil, err
@@ -445,7 +445,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			if err := binary.Read(dic, bo, &dylinkInfoCmd); err != nil {
 				return nil, err
 			}
-			fmt.Printf("LoadCmdDylinkInfo: %+v\n", dylinkInfoCmd)
+			//fmt.Printf("LoadCmdDylinkInfo: %+v\n", dylinkInfoCmd)
 			// Copy each section next
 			var dylinkInfo DylinkInfo
 			// Rebase deets
