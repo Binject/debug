@@ -1,7 +1,6 @@
 package macho
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
 	"io/ioutil"
@@ -10,20 +9,14 @@ import (
 	"sort"
 )
 
-// Write - Writes an *macho.File to disk
-func (machoFile *File) Write(destFile string) error {
-
-	bytesWritten := uint64(0)
-	f, err := os.Create(destFile)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := bufio.NewWriter(f)
+// Bytes - Returns the bytes of an assembled *macho.File
+func (machoFile *File) Bytes() ([]byte, error) {
+	var bytesWritten uint64
+	w := bytes.NewBuffer(nil)
 
 	// Write entire file header.
 	buf := &bytes.Buffer{}
-	err = binary.Write(buf, machoFile.ByteOrder, machoFile.FileHeader)
+	err := binary.Write(buf, machoFile.ByteOrder, machoFile.FileHeader)
 	if err != nil {
 		panic(err)
 	}
@@ -48,7 +41,6 @@ func (machoFile *File) Write(destFile string) error {
 		bytesWritten += uint64(LoadCmdLen)
 		log.Printf("%x: Wrote Load Command, total size of: %v", bytesWritten, LoadCmdLen)
 	}
-	w.Flush()
 
 	// Sort Sections
 	sortedSections := machoFile.Sections[:]
@@ -78,7 +70,7 @@ func (machoFile *File) Write(destFile string) error {
 		}
 		section, err := ioutil.ReadAll(s.Open())
 		if err != nil {
-			return err
+			return nil, err
 		}
 		binary.Write(w, machoFile.ByteOrder, section)
 		bytesWritten += uint64(len(section))
@@ -88,7 +80,6 @@ func (machoFile *File) Write(destFile string) error {
 		//	binary.Write(w, machoFile.ByteOrder, machoFile.Insertion)
 		//	bytesWritten += uint64(len(machoFile.Insertion))
 		//}
-		w.Flush()
 	}
 	// Write Dynamic Loader Info if it exists
 	if machoFile.DylinkInfo != nil {
@@ -105,7 +96,6 @@ func (machoFile *File) Write(destFile string) error {
 			w.Write(machoFile.DylinkInfo.RebaseDat)
 			bytesWritten += uint64(machoFile.DylinkInfo.RebaseLen)
 			log.Printf("%x: Wrote raw Rebase, length of: %d", bytesWritten, machoFile.DylinkInfo.RebaseLen)
-			w.Flush()
 		}
 		//Binding
 		if len(machoFile.DylinkInfo.BindingInfoDat) > 0 {
@@ -120,7 +110,6 @@ func (machoFile *File) Write(destFile string) error {
 			w.Write(machoFile.DylinkInfo.BindingInfoDat)
 			bytesWritten += uint64(machoFile.DylinkInfo.BindingInfoLen)
 			log.Printf("%x: Wrote raw Binding Info, length of: %d", bytesWritten, machoFile.DylinkInfo.BindingInfoLen)
-			w.Flush()
 		}
 		//Lazy
 		if len(machoFile.DylinkInfo.LazyBindingDat) > 0 {
@@ -135,7 +124,6 @@ func (machoFile *File) Write(destFile string) error {
 			w.Write(machoFile.DylinkInfo.LazyBindingDat)
 			bytesWritten += uint64(machoFile.DylinkInfo.LazyBindingLen)
 			log.Printf("%x: Wrote raw lazybinding, length of: %d", bytesWritten, machoFile.DylinkInfo.LazyBindingLen)
-			w.Flush()
 		}
 		//Export
 		if len(machoFile.DylinkInfo.ExportInfoDat) > 0 {
@@ -150,7 +138,6 @@ func (machoFile *File) Write(destFile string) error {
 			w.Write(machoFile.DylinkInfo.ExportInfoDat)
 			bytesWritten += uint64(machoFile.DylinkInfo.ExportInfoLen)
 			log.Printf("%x: Wrote raw Export Info, length of: %d", bytesWritten, machoFile.DylinkInfo.ExportInfoLen)
-			w.Flush()
 		}
 		//Weak
 		if len(machoFile.DylinkInfo.WeakBindingDat) > 0 {
@@ -165,7 +152,6 @@ func (machoFile *File) Write(destFile string) error {
 			w.Write(machoFile.DylinkInfo.WeakBindingDat)
 			bytesWritten += uint64(machoFile.DylinkInfo.WeakBindingLen)
 			log.Printf("%x: Wrote raw Weak Binding, length of: %d", bytesWritten, machoFile.DylinkInfo.WeakBindingLen)
-			w.Flush()
 		}
 	}
 
@@ -182,7 +168,6 @@ func (machoFile *File) Write(destFile string) error {
 		w.Write(machoFile.FuncStarts.RawDat)
 		bytesWritten += uint64(machoFile.FuncStarts.Len)
 		log.Printf("%x: Wrote raw funcstarts, length of: %d", bytesWritten, machoFile.FuncStarts.Len)
-		w.Flush()
 	}
 
 	// Write the Data in Code Entries if they exist
@@ -197,7 +182,6 @@ func (machoFile *File) Write(destFile string) error {
 		w.Write(machoFile.DataInCode.RawDat)
 		bytesWritten += uint64(machoFile.DataInCode.Len)
 		log.Printf("%x: Wrote raw dataincode, length of: %d", bytesWritten, machoFile.DataInCode.Len)
-		w.Flush()
 	}
 
 	// Write Symbols is next I think
@@ -239,7 +223,6 @@ func (machoFile *File) Write(destFile string) error {
 	w.Write(symtab.RawStringtab)
 	bytesWritten += uint64(len(symtab.RawStringtab))
 	log.Printf("%x: Wrote raw stringtab, length of: %d", bytesWritten, len(symtab.RawStringtab))
-	w.Flush()
 
 	// Write The Signature Block, if it exists
 	//log.Printf("SigBlock Dat: %v", machoFile.SigBlock)
@@ -253,7 +236,6 @@ func (machoFile *File) Write(destFile string) error {
 		w.Write(machoFile.SigBlock.RawDat)
 		bytesWritten += uint64(machoFile.SigBlock.Len)
 		log.Printf("%x: Wrote raw sigblock, length of: %d", bytesWritten, machoFile.SigBlock.Len)
-		w.Flush()
 	}
 
 	// Write 0s to the end of the final segment
@@ -262,10 +244,28 @@ func (machoFile *File) Write(destFile string) error {
 		w.Write(pad4)
 		bytesWritten += uint64(len(pad4))
 		log.Printf("%x: wrote pad of: %d", bytesWritten, len(pad4))
-		w.Flush()
 	}
 
-	w.Flush()
 	log.Println("All done!")
+	machoBytes := w.Bytes()
+	return machoBytes, nil
+}
+
+// WriteFile - Creates a new file and writes it using the Bytes func above
+func (machoFile *File) WriteFile(destFile string) error {
+	f, err := os.Create(destFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	machoData, err := machoFile.Bytes()
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(machoData)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
