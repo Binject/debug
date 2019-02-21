@@ -282,14 +282,39 @@ func (FatyFile *FatFile) WriteFatFile(destFile string) error {
 	bytesWritten := uint64(0)
 	var FatyMachos []File
 
-	//Fat Header First
-	//Magic Bytes
+	// Fat Header First
+	// Magic Bytes
 	binary.Write(w, binary.BigEndian, FatyFile.Magic)
 	bytesWritten += 4
-	//Arch Size
+	// Number of Fat Arches [4 bytes]
+	FatArches := uint32(len(FatyFile.Arches))
+	binary.Write(w, binary.BigEndian, FatArches)
+	bytesWritten += 4
+	w.Flush()
+	// Arch Size
 	for _, arch := range FatyFile.Arches {
 		log.Printf("Arch details: %v\n", arch)
 		FatyMachos = append(FatyMachos, *(arch.File))
+		//Cpu Type
+		binary.Write(w, binary.BigEndian, uint32(arch.Cpu))
+		bytesWritten += 4
+		//Sub CPU type
+		binary.Write(w, binary.BigEndian, uint32(arch.SubCpu))
+		bytesWritten += 4
+		//FileOffset
+		binary.Write(w, binary.BigEndian, uint32(arch.Offset))
+		bytesWritten += 4
+		//Size
+		binary.Write(w, binary.BigEndian, uint32(arch.Size))
+		bytesWritten += 4
+		//Align
+		binary.Write(w, binary.BigEndian, uint32(arch.Align))
+		bytesWritten += 4
+		w.Flush()
 	}
+	// End of Fat Headers
+
+	// Write each Macho File at its Offset
+
 	return nil
 }
