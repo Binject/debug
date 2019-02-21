@@ -1,6 +1,7 @@
 package macho
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"io/ioutil"
@@ -267,5 +268,28 @@ func (machoFile *File) WriteFile(destFile string) error {
 		return err
 	}
 
+	return nil
+}
+
+// WriteFatFile - Creates a new Fat file and multiple machos into it
+func (FatyFile *FatFile) WriteFatFile(destFile string) error {
+	f, err := os.Create(destFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+	bytesWritten := uint64(0)
+	var FatyMachos []File
+
+	//Fat Header First
+	//Magic Bytes
+	binary.Write(w, binary.BigEndian, FatyFile.Magic)
+	bytesWritten += 4
+	//Arch Size
+	for _, arch := range FatyFile.Arches {
+		log.Printf("Arch details: %v\n", arch)
+		FatyMachos = append(FatyMachos, *(arch.File))
+	}
 	return nil
 }
