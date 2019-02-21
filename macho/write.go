@@ -281,6 +281,7 @@ func (FatyFile *FatFile) WriteFatFile(destFile string) error {
 	w := bufio.NewWriter(f)
 	bytesWritten := uint64(0)
 	var FatyMachos []File
+	var FatyMachosOffsets []uint32
 
 	// Fat Header First
 	// Magic Bytes
@@ -302,6 +303,7 @@ func (FatyFile *FatFile) WriteFatFile(destFile string) error {
 		binary.Write(w, binary.BigEndian, uint32(arch.SubCpu))
 		bytesWritten += 4
 		//FileOffset
+		FatyMachosOffsets = append(FatyMachosOffsets, arch.Offset)
 		binary.Write(w, binary.BigEndian, uint32(arch.Offset))
 		bytesWritten += 4
 		//Size
@@ -315,6 +317,22 @@ func (FatyFile *FatFile) WriteFatFile(destFile string) error {
 	// End of Fat Headers
 
 	// Write each Macho File at its Offset
+	for index, mach := range FatyMachos {
+		// Pad to the offset
+		if bytesWritten < uint64(FatyMachosOffsets[index]) {
+			pad := make([]byte, uint64(FatyMachosOffsets[index])-bytesWritten)
+			w.Write(pad)
+			bytesWritten += uint64(len(pad))
+		}
+		// Write the Mach-o file
+		machOut, err := mach.Bytes()
+		if err != nil {
+			return err
+		}
+		binary.Write(w, binary.BigEndian, machOut)
+		bytesWritten += uint64(len(machOut))
+		w.Flush()
+	}
 
 	return nil
 }
