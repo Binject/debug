@@ -73,6 +73,9 @@ type SectionHeader struct {
 	Addralign uint64
 	Entsize   uint64
 
+	Shnum  int    // Section Header Number
+	Shname uint32 // Section Header Name (index)
+
 	// FileSize is the size of this section in the file in bytes.
 	// If a section is compressed, FileSize is the size of the
 	// compressed data, while Size (above) is the size of the
@@ -171,9 +174,35 @@ func (p *Prog) Open() io.ReadSeeker { return io.NewSectionReader(p.sr, 0, 1<<63-
 // A Symbol represents an entry in an ELF symbol table section.
 type Symbol struct {
 	Name        string
+	NameIndex   uint32
 	Info, Other byte
 	Section     SectionIndex
+	SectIndex   uint16
 	Value, Size uint64
+}
+
+// ToSym64 - Convert to a Sym64
+func (s Symbol) ToSym64() (retval Sym64) {
+
+	retval.Name = s.NameIndex
+	retval.Info = s.Info
+	retval.Other = s.Other
+	retval.Shndx = s.SectIndex
+	retval.Value = s.Value
+	retval.Size = s.Size
+	return
+}
+
+// ToSym32 - Convert to a Sym32
+func (s Symbol) ToSym32() (retval Sym32) {
+
+	retval.Name = s.NameIndex
+	retval.Info = s.Info
+	retval.Other = s.Other
+	retval.Shndx = s.SectIndex
+	retval.Value = uint32(s.Value)
+	retval.Size = uint32(s.Size)
+	return
 }
 
 /*
@@ -391,7 +420,10 @@ func NewFile(r io.ReaderAt) (*File, error) {
 				Info:      sh.Info,
 				Addralign: uint64(sh.Addralign),
 				Entsize:   uint64(sh.Entsize),
+				Shnum:     i,
+				Shname:    sh.Name,
 			}
+
 		case ELFCLASS64:
 			sh := new(Section64)
 			if err := binary.Read(sr, f.ByteOrder, sh); err != nil {
@@ -408,6 +440,8 @@ func NewFile(r io.ReaderAt) (*File, error) {
 				Info:      sh.Info,
 				Addralign: sh.Addralign,
 				Entsize:   sh.Entsize,
+				Shnum:     i,
+				Shname:    sh.Name,
 			}
 		}
 		s.sr = io.NewSectionReader(r, int64(s.Offset), int64(s.FileSize))
@@ -555,9 +589,11 @@ func (f *File) getSymbols64(typ SectionType) ([]Symbol, []byte, error) {
 		binary.Read(symtab, f.ByteOrder, &sym)
 		str, _ := getString(strdata, int(sym.Name))
 		symbols[i].Name = str
+		symbols[i].NameIndex = sym.Name
 		symbols[i].Info = sym.Info
 		symbols[i].Other = sym.Other
 		symbols[i].Section = SectionIndex(sym.Shndx)
+		symbols[i].SectIndex = sym.Shndx
 		symbols[i].Value = sym.Value
 		symbols[i].Size = sym.Size
 		i++
@@ -1359,6 +1395,7 @@ func (f *File) ImportedLibraries() ([]string, error) {
 	return f.DynString(DT_NEEDED)
 }
 
+//fnord: this needs a rewrite to point at IR
 // DynString returns the strings listed for the given tag in the file's dynamic
 // section.
 //

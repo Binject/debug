@@ -6,7 +6,6 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"sort"
 )
 
 // Write - Writes an *elf.File to disk
@@ -157,9 +156,14 @@ func (elfFile *File) Write(destFile string) error {
 	}
 
 	sortedSections := elfFile.Sections[:]
-	sort.Slice(sortedSections, func(a, b int) bool { return elfFile.Sections[a].Offset < elfFile.Sections[b].Offset })
+	//sort.Slice(sortedSections, func(a, b int) bool { return elfFile.Sections[a].Link < elfFile.Sections[b].Link })
 	for _, s := range sortedSections {
-		if s.Type == SHT_NULL {
+
+		log.Printf("Writing section: %s type: %+v\n", s.Name, s.Type)
+		log.Printf("written: %x offset: %x\n", bytesWritten, s.Offset)
+
+		if s.Type == SHT_NULL || s.Type == SHT_NOBITS || s.FileSize == 0 {
+			log.Println("continuing...")
 			continue
 		}
 
@@ -167,26 +171,102 @@ func (elfFile *File) Write(destFile string) error {
 			log.Printf("Overlapping Sections in Generated Elf: %+v\n", s.Name)
 			continue
 		}
-		if bytesWritten < s.Offset {
+		if s.Offset != 0 && bytesWritten < s.Offset {
 			pad := make([]byte, s.Offset-bytesWritten)
 			w.Write(pad)
+			log.Printf("Padding before section %s at %x: length:%x to:%x\n", s.Name, bytesWritten, len(pad), s.Offset)
 			bytesWritten += uint64(len(pad))
 		}
-		section, err := ioutil.ReadAll(s.Open())
-		if err != nil {
-			return err
-		}
-		binary.Write(w, elfFile.ByteOrder, section)
-		bytesWritten += uint64(len(section))
 
-		if len(elfFile.Insertion) > 0 && s.Size-uint64(len(section)) == uint64(len(elfFile.Insertion)) {
+		slen := 0
+		switch s.Type {
+		/*
+			case SHT_DYNAMIC:
+				symbols, err := elfFile.DynamicSymbols()
+				if err != nil {
+					return err
+				}
+				for _, symbol := range symbols {
+
+					switch elfFile.Class {
+					case ELFCLASS32:
+						sym:=symbol.
+						binary.Write(w, elfFile.ByteOrder,
+					case ELFCLASS64:
+						binary.Write(w, elfFile.ByteOrder, symbol.ToSym64())
+					}
+				}
+		*/
+		default:
+			section, err := ioutil.ReadAll(s.Open())
+			if err != nil {
+				return err
+			}
+			binary.Write(w, elfFile.ByteOrder, section)
+			slen = len(section)
+			log.Printf("Wrote %s section at %x, length %x\n", s.Name, bytesWritten, slen)
+			bytesWritten += uint64(slen)
+		}
+
+		if len(elfFile.Insertion) > 0 && s.Size-uint64(slen) == uint64(len(elfFile.Insertion)) {
 			binary.Write(w, elfFile.ByteOrder, elfFile.Insertion)
 			bytesWritten += uint64(len(elfFile.Insertion))
 		}
-
 		w.Flush()
 	}
 
+	// Pad to Section Header Table
+	if bytesWritten < uint64(elfFile.FileHeader.SHTOffset) {
+		pad := make([]byte, uint64(elfFile.FileHeader.SHTOffset)-bytesWritten)
+		w.Write(pad)
+		log.Printf("Padding before SHT at %x: length:%x to:%x\n", bytesWritten, len(pad), elfFile.FileHeader.SHTOffset)
+		bytesWritten += uint64(len(pad))
+	}
+
+	// Write Section Header Table
+
+	for _, s := range elfFile.Sections[:] {
+
+		switch elfFile.Class {
+		case ELFCLASS32:
+			binary.Write(w, elfFile.ByteOrder, &Section32{
+				Name:      s.Shname,
+				Type:      uint32(s.Type),
+				Flags:     uint32(s.Flags),
+				Addr:      uint32(s.Addr),
+				Off:       uint32(s.Offset),
+				Size:      uint32(s.Size),
+				Link:      s.Link,
+				Info:      s.Info,
+				Addralign: uint32(s.Addralign),
+				Entsize:   uint32(s.Entsize)})
+		case ELFCLASS64:
+			binary.Write(w, elfFile.ByteOrder, &Section64{
+				Name:      s.Shname,
+				Type:      uint32(s.Type),
+				Flags:     uint64(s.Flags),
+				Addr:      s.Addr,
+				Off:       s.Offset,
+				Size:      s.Size,
+				Link:      s.Link,
+				Info:      s.Info,
+				Addralign: s.Addralign,
+				Entsize:   s.Entsize})
+		}
+
+		/*
+			binary.Write(w, elfFile.ByteOrder, s.Name)
+			binary.Write(w, elfFile.ByteOrder, s.Type)
+			binary.Write(w, elfFile.ByteOrder, s.Flags)
+			binary.Write(w, elfFile.ByteOrder, s.Addr)
+			binary.Write(w, elfFile.ByteOrder, s.Offset)
+			binary.Write(w, elfFile.ByteOrder, s.Size)
+			binary.Write(w, elfFile.ByteOrder, s.Link)
+			binary.Write(w, elfFile.ByteOrder, s.Info)
+			binary.Write(w, elfFile.ByteOrder, s.Addralign)
+			binary.Write(w, elfFile.ByteOrder, s.Entsize)
+		*/
+	}
 	w.Flush()
 	return nil
 }
