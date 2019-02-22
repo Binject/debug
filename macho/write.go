@@ -1,6 +1,7 @@
 package macho
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"io/ioutil"
@@ -265,6 +266,72 @@ func (machoFile *File) WriteFile(destFile string) error {
 	_, err = f.Write(machoData)
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// WriteFatFile - Creates a new Fat file and multiple machos into it
+func (FatyFile *FatFile) WriteFatFile(destFile string) error {
+	f, err := os.Create(destFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+	bytesWritten := uint64(0)
+	var FatyMachos []File
+	var FatyMachosOffsets []uint32
+
+	// Fat Header First
+	// Magic Bytes
+	binary.Write(w, binary.BigEndian, FatyFile.Magic)
+	bytesWritten += 4
+	// Number of Fat Arches [4 bytes]
+	FatArches := uint32(len(FatyFile.Arches))
+	binary.Write(w, binary.BigEndian, FatArches)
+	bytesWritten += 4
+	w.Flush()
+	// Arch Size
+	for _, arch := range FatyFile.Arches {
+		log.Printf("Arch details: %v\n", arch)
+		FatyMachos = append(FatyMachos, *(arch.File))
+		//Cpu Type
+		binary.Write(w, binary.BigEndian, uint32(arch.Cpu))
+		bytesWritten += 4
+		//Sub CPU type
+		binary.Write(w, binary.BigEndian, uint32(arch.SubCpu))
+		bytesWritten += 4
+		//FileOffset
+		FatyMachosOffsets = append(FatyMachosOffsets, arch.Offset)
+		binary.Write(w, binary.BigEndian, uint32(arch.Offset))
+		bytesWritten += 4
+		//Size
+		binary.Write(w, binary.BigEndian, uint32(arch.Size))
+		bytesWritten += 4
+		//Align
+		binary.Write(w, binary.BigEndian, uint32(arch.Align))
+		bytesWritten += 4
+		w.Flush()
+	}
+	// End of Fat Headers
+
+	// Write each Macho File at its Offset
+	for index, mach := range FatyMachos {
+		// Pad to the offset
+		if bytesWritten < uint64(FatyMachosOffsets[index]) {
+			pad := make([]byte, uint64(FatyMachosOffsets[index])-bytesWritten)
+			w.Write(pad)
+			bytesWritten += uint64(len(pad))
+		}
+		// Write the Mach-o file
+		machOut, err := mach.Bytes()
+		if err != nil {
+			return err
+		}
+		binary.Write(w, binary.BigEndian, machOut)
+		bytesWritten += uint64(len(machOut))
+		w.Flush()
 	}
 
 	return nil
