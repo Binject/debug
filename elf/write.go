@@ -2,22 +2,19 @@ package elf
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"io/ioutil"
 	"log"
 	"os"
 )
 
-// Write - Writes an *elf.File to disk
-func (elfFile *File) Write(destFile string) error {
+// Bytes - returns the bytes of an Elf file
+func (elfFile *File) Bytes() ([]byte, error) {
 
 	bytesWritten := uint64(0)
-	f, err := os.Create(destFile)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := bufio.NewWriter(f)
+	elfBuf := bytes.NewBuffer(nil)
+	w := bufio.NewWriter(elfBuf)
 
 	// Write Elf Magic
 	w.WriteByte('\x7f')
@@ -180,27 +177,24 @@ func (elfFile *File) Write(destFile string) error {
 
 		slen := 0
 		switch s.Type {
-		/*
-			case SHT_DYNAMIC:
-				symbols, err := elfFile.DynamicSymbols()
-				if err != nil {
-					return err
+		case SHT_DYNAMIC:
+			for _, taggedValue := range elfFile.DynTags {
+				//log.Printf("writing %d (%x) -> %d (%x)\n", taggedValue.Tag, taggedValue.Tag, taggedValue.Value, taggedValue.Value)
+				switch elfFile.Class {
+				case ELFCLASS32:
+					binary.Write(w, elfFile.ByteOrder, uint32(taggedValue.Tag))
+					binary.Write(w, elfFile.ByteOrder, uint32(taggedValue.Value))
+					bytesWritten += 8
+				case ELFCLASS64:
+					binary.Write(w, elfFile.ByteOrder, uint64(taggedValue.Tag))
+					binary.Write(w, elfFile.ByteOrder, uint64(taggedValue.Value))
+					bytesWritten += 16
 				}
-				for _, symbol := range symbols {
-
-					switch elfFile.Class {
-					case ELFCLASS32:
-						sym:=symbol.
-						binary.Write(w, elfFile.ByteOrder,
-					case ELFCLASS64:
-						binary.Write(w, elfFile.ByteOrder, symbol.ToSym64())
-					}
-				}
-		*/
+			}
 		default:
 			section, err := ioutil.ReadAll(s.Open())
 			if err != nil {
-				return err
+				return nil, err
 			}
 			binary.Write(w, elfFile.ByteOrder, section)
 			slen = len(section)
@@ -253,20 +247,26 @@ func (elfFile *File) Write(destFile string) error {
 				Addralign: s.Addralign,
 				Entsize:   s.Entsize})
 		}
-
-		/*
-			binary.Write(w, elfFile.ByteOrder, s.Name)
-			binary.Write(w, elfFile.ByteOrder, s.Type)
-			binary.Write(w, elfFile.ByteOrder, s.Flags)
-			binary.Write(w, elfFile.ByteOrder, s.Addr)
-			binary.Write(w, elfFile.ByteOrder, s.Offset)
-			binary.Write(w, elfFile.ByteOrder, s.Size)
-			binary.Write(w, elfFile.ByteOrder, s.Link)
-			binary.Write(w, elfFile.ByteOrder, s.Info)
-			binary.Write(w, elfFile.ByteOrder, s.Addralign)
-			binary.Write(w, elfFile.ByteOrder, s.Entsize)
-		*/
 	}
 	w.Flush()
+	return elfBuf.Bytes(), nil
+}
+
+// WriteFile - Creates a new file and writes it using the Bytes func above
+func (elfFile *File) WriteFile(destFile string) error {
+	f, err := os.Create(destFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	elfData, err := elfFile.Bytes()
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(elfData)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }

@@ -59,7 +59,7 @@ type File struct {
 	gnuVersym []byte
 	Insertion []byte
 
-	DynTags map[DynTag]uint64
+	DynTags []DynTagValue
 }
 
 // A SectionHeader represents a single ELF section header.
@@ -475,9 +475,11 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			}
 		}
 
-		f.parseDynTags(s)
-
 		f.Sections[i] = s
+	}
+
+	if err := f.parseDynTags(); err != nil {
+		return nil, err
 	}
 
 	if len(f.Sections) == 0 {
@@ -878,26 +880,38 @@ func (f *File) ImportedLibraries() ([]string, error) {
 	return f.DynString(DT_NEEDED)
 }
 
-func (f *File) parseDynTags(s *Section) error {
-	m := make(map[DynTag]uint64)
+func (f *File) parseDynTags() error {
+	s := f.SectionByType(SHT_DYNAMIC)
+	if s == nil {
+		return nil // nothing to do
+	}
+
+	var m []DynTagValue
 	d, err := s.Data()
 	if err != nil {
 		return err
 	}
-	for len(d) > 0 {
-		var t DynTag
-		var v uint64
-		switch f.Class {
-		case ELFCLASS32:
-			t = DynTag(f.ByteOrder.Uint32(d[0:4]))
-			v = uint64(f.ByteOrder.Uint32(d[4:8]))
-			d = d[8:]
-		case ELFCLASS64:
-			t = DynTag(f.ByteOrder.Uint64(d[0:8]))
-			v = f.ByteOrder.Uint64(d[8:16])
-			d = d[16:]
+	//fmt.Printf("%+v\nd: %x len(%d)\n", s, d, len(d))
+
+	r := bytes.NewBuffer(d)
+	for {
+		var t, v uint64
+		if err := binary.Read(r, f.ByteOrder, &t); err != nil {
+			if err == io.EOF {
+				break
+			} else if err != nil {
+				return err
+			}
 		}
-		m[t] = v
+		if err := binary.Read(r, f.ByteOrder, &v); err != nil {
+			if err == io.EOF {
+				break
+			} else if err != nil {
+				return err
+			}
+		}
+		m = append(m, DynTagValue{Tag: DynTag(t), Value: v})
+		//fmt.Printf("%x -> %x\n", t, v)
 	}
 	f.DynTags = m
 	return nil
@@ -926,9 +940,9 @@ func (f *File) DynString(tag DynTag) ([]string, error) {
 		return nil, err
 	}
 	var all []string
-	for t, v := range f.DynTags {
-		if t == tag {
-			s, ok := getString(str, int(v))
+	for _, taggedValue := range f.DynTags {
+		if taggedValue.Tag == tag {
+			s, ok := getString(str, int(taggedValue.Value))
 			if ok {
 				all = append(all, s)
 			}

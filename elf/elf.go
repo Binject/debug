@@ -895,8 +895,13 @@ var dtStrings = []intName{
 func (i DynTag) String() string   { return stringName(uint32(i), dtStrings, false) }
 func (i DynTag) GoString() string { return stringName(uint32(i), dtStrings, true) }
 
+type DynTagValue struct {
+	Tag   DynTag
+	Value uint64
+}
+
 // DT_FLAGS values.
-type DynFlag int
+type DynFlag uint64
 
 const (
 	DF_ORIGIN DynFlag = 0x0001 /* Indicates that the object being loaded may
