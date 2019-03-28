@@ -248,6 +248,14 @@ func (elfFile *File) Bytes() ([]byte, error) {
 				Entsize:   s.Entsize})
 		}
 	}
+
+	// Do I have a PT_NOTE segment to add at the end?
+
+	if len(elfFile.InsertionEOF) > 0 {
+		binary.Write(w, elfFile.ByteOrder, elfFile.InsertionEOF)
+		bytesWritten += uint64(len(elfFile.InsertionEOF))
+	}
+
 	w.Flush()
 	return elfBuf.Bytes(), nil
 }
