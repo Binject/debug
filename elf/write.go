@@ -202,7 +202,8 @@ func (elfFile *File) Bytes() ([]byte, error) {
 			bytesWritten += uint64(slen)
 		}
 
-		if len(elfFile.Insertion) > 0 && s.Size-uint64(slen) == uint64(len(elfFile.Insertion)) {
+		// todo:  elfFile.Insertion should be renamed InsertionLoadEnd or similar
+		if s.Type == SHT_PROGBITS && len(elfFile.Insertion) > 0 && s.Size-uint64(slen) >= uint64(len(elfFile.Insertion)) {
 			binary.Write(w, elfFile.ByteOrder, elfFile.Insertion)
 			bytesWritten += uint64(len(elfFile.Insertion))
 		}
