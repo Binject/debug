@@ -52,12 +52,12 @@ type FileHeader struct {
 // A File represents an open ELF file.
 type File struct {
 	FileHeader
-	Sections  []*Section
-	Progs     []*Prog
-	closer    io.Closer
-	gnuNeed   []verneed
-	gnuVersym []byte
-	Insertion []byte
+	Sections     []*Section
+	Progs        []*Prog
+	closer       io.Closer
+	gnuNeed      []verneed
+	gnuVersym    []byte
+	Insertion    []byte
 	InsertionEOF []byte
 
 	DynTags []DynTagValue
@@ -259,6 +259,17 @@ func (f *File) Close() error {
 func (f *File) SectionByType(typ SectionType) *Section {
 	for _, s := range f.Sections {
 		if s.Type == typ {
+			return s
+		}
+	}
+	return nil
+}
+
+// SectionByName returns the first section in f with the
+// given name, or nil if there is no such section.
+func (f *File) SectionByName(name string) *Section {
+	for _, s := range f.Sections {
+		if s.Name == name {
 			return s
 		}
 	}
