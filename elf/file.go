@@ -58,6 +58,7 @@ type File struct {
 	gnuNeed   []verneed
 	gnuVersym []byte
 	Insertion []byte
+	InsertionEOF []byte
 
 	DynTags []DynTagValue
 }
