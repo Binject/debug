@@ -91,12 +91,14 @@ const (
 	LoadCmdDylib      LoadCmd = 0xc // load dylib command
 	LoadCmdDylinker   LoadCmd = 0xf // id dylinker command (not load dylinker command)
 	LoadCmdSegment64  LoadCmd = 0x19
-	LoadCmdRpath      LoadCmd = 0x8000001c
 	LoadCmdSignature  LoadCmd = 0x1d
-	LoadCmdFuncStarts LoadCmd = 0x26       // Function Starts
-	LoadCmdDataInCode LoadCmd = 0x29       // Data In Code
-	LoadCmdDylinkInfo LoadCmd = 0x80000022 // Dynamic Linker Info Only
+	LoadCmdFuncStarts LoadCmd = 0x26 // Function Starts
+	LoadCmdDataInCode LoadCmd = 0x29 // Data In Code
 
+	LoadReqDyld       LoadCmd = 0x80000000
+	LoadCmdMain       LoadCmd = (0x28 | LoadReqDyld) // replacement for LC_UNIXTHREAD
+	LoadCmdRpath      LoadCmd = 0x8000001c
+	LoadCmdDylinkInfo LoadCmd = 0x80000022 // Dynamic Linker Info Only
 )
 
 var cmdStrings = []intName{
@@ -253,6 +255,14 @@ type (
 		Len  uint32
 		Type uint32
 		Data []uint32
+	}
+
+	// A EntryPointCmd is a Mach-O entry point command.
+	EntryPointCmd struct {
+		cmd       uint32 /* LC_MAIN only used in MH_EXECUTE filetypes */
+		cmdsize   uint32 /* 24 */
+		entryoff  uint64 /* file (__TEXT) offset of main() */
+		stacksize uint64 /* if not zero, initial stack size */
 	}
 )
 

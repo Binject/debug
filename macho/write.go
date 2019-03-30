@@ -43,16 +43,24 @@ func (machoFile *File) Bytes() ([]byte, error) {
 		log.Printf("%x: Wrote Load Command, total size of: %v", bytesWritten, LoadCmdLen)
 	}
 
+	// Shellcode gets caved in between the final load command and the first section
+	if len(machoFile.Insertion) > 0 {
+		binary.Write(w, machoFile.ByteOrder, machoFile.Insertion)
+		bytesWritten += uint64(len(machoFile.Insertion))
+	}
+
 	// Sort Sections
 	sortedSections := machoFile.Sections[:]
 	sort.Slice(sortedSections, func(a, b int) bool { return machoFile.Sections[a].Offset < machoFile.Sections[b].Offset })
-	// Shellcode gets caved in between the final load command and the first section
+
 	var caveOffset, caveSize uint64
 	for _, s := range sortedSections {
 		if s.SectionHeader.Seg == "__TEXT" && s.Name == "__text" {
 			caveOffset = bytesWritten
 			caveSize = uint64(s.Offset) - caveOffset
 			log.Printf("Code Cave Size: %d - %d = %d\n", s.Offset, caveOffset, caveSize)
+			log.Println("Shellcode Size: ", len(machoFile.Insertion))
+			break
 		}
 	}
 
@@ -76,11 +84,6 @@ func (machoFile *File) Bytes() ([]byte, error) {
 		binary.Write(w, machoFile.ByteOrder, section)
 		bytesWritten += uint64(len(section))
 		log.Printf("%x: wrote %d bytes section/segment named: %s %s\n", bytesWritten, uint64(len(section)), s.Name, s.Seg)
-
-		//if len(machoFile.Insertion) > 0 && s.Size-uint64(len(section)) == uint64(len(machoFile.Insertion)) {
-		//	binary.Write(w, machoFile.ByteOrder, machoFile.Insertion)
-		//	bytesWritten += uint64(len(machoFile.Insertion))
-		//}
 	}
 	// Write Dynamic Loader Info if it exists
 	if machoFile.DylinkInfo != nil {

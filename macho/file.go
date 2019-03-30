@@ -32,6 +32,9 @@ type File struct {
 	DataInCode *DataInCode
 	DylinkInfo *DylinkInfo
 
+	EntryPoint uint64
+	Insertion  []byte
+
 	closer io.Closer
 }
 
@@ -610,6 +613,17 @@ func NewFile(r io.ReaderAt) (*File, error) {
 					return nil, err
 				}
 			}
+
+		//case LoadCmdUnixThread:
+		// todo: do we have to support thread_command here for older binaries? or is the LC_MAIN handling backwards compatible?
+
+		case LoadCmdMain:
+			var entryPoint EntryPointCmd
+			b := bytes.NewReader(cmddat)
+			if err := binary.Read(b, bo, &entryPoint); err != nil {
+				return nil, err
+			}
+			f.EntryPoint = entryPoint.entryoff
 		}
 		if s != nil {
 			s.sr = io.NewSectionReader(r, int64(s.Offset), int64(s.Filesz))
