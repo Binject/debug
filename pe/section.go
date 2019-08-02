@@ -70,7 +70,7 @@ func readRelocs(sh *SectionHeader, r io.ReadSeeker) ([]Reloc, error) {
 // original name of the section on disk.
 type SectionHeader struct {
 	Name                 string
-	OriginalName		 [8]uint8
+	OriginalName         [8]uint8
 	VirtualSize          uint32
 	VirtualAddress       uint32
 	Size                 uint32
@@ -99,6 +99,11 @@ type Section struct {
 
 // Data reads and returns the contents of the PE section s.
 func (s *Section) Data() ([]byte, error) {
+
+	if s.sr == nil { // This section was added from code, the internal SectionReader is nil
+		return nil, nil
+	}
+
 	dat := make([]byte, s.sr.Size())
 	n, err := s.sr.ReadAt(dat, 0)
 	if n == len(dat) {
@@ -111,3 +116,16 @@ func (s *Section) Data() ([]byte, error) {
 func (s *Section) Open() io.ReadSeeker {
 	return io.NewSectionReader(s.sr, 0, 1<<63-1)
 }
+
+// Section Flags (Characteristics field)
+const (
+	IMAGE_SCN_CNT_CODE    = 0x00000020 // Section contains code
+	IMAGE_SCN_MEM_EXECUTE = 0x20000000 // Section is executable
+	IMAGE_SCN_MEM_READ    = 0x40000000 // Section is readable
+
+	IMAGE_FILE_RELOCS_STRIPPED = 0x0001 // Relocation info stripped from file
+
+	IMAGE_DLLCHARACTERISTICS_NX_COMPAT = 0x0100 // Image is NX compatable
+
+	IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE = 0x0040 // DLL can move
+)

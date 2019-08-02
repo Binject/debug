@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"log"
 	"os"
 )
 
@@ -25,7 +26,7 @@ func (peFile *File) Bytes() ([]byte, error) {
 
 	// apply padding before PE header if necessary
 	if uint32(bytesWritten) != peFile.DosHeader.AddressOfNewExeHeader {
-		padding := make([]byte, peFile.DosHeader.AddressOfNewExeHeader - uint32(bytesWritten))
+		padding := make([]byte, peFile.DosHeader.AddressOfNewExeHeader-uint32(bytesWritten))
 		binary.Write(peBuf, binary.LittleEndian, padding)
 		bytesWritten += uint64(len(padding))
 	}
@@ -37,7 +38,7 @@ func (peFile *File) Bytes() ([]byte, error) {
 	bytesWritten += uint64(binary.Size(peFile.FileHeader) + len(peMagic))
 
 	var (
-		is32bit bool
+		is32bit                              bool
 		oldCertTableOffset, oldCertTableSize uint32
 	)
 
@@ -66,9 +67,9 @@ func (peFile *File) Bytes() ([]byte, error) {
 	sectionHeaders := make([]SectionHeader32, len(peFile.Sections))
 	for idx, section := range peFile.Sections {
 		// write section header
-		sectionHeader := SectionHeader32 {
-			Name:				  section.OriginalName,
-			VirtualSize:		  section.VirtualSize,
+		sectionHeader := SectionHeader32{
+			Name:                 section.OriginalName,
+			VirtualSize:          section.VirtualSize,
 			VirtualAddress:       section.VirtualAddress,
 			SizeOfRawData:        section.Size,
 			PointerToRawData:     section.Offset,
@@ -80,15 +81,21 @@ func (peFile *File) Bytes() ([]byte, error) {
 		}
 		sectionHeaders[idx] = sectionHeader
 
+		log.Printf("section: %+v\nsectionHeader: %+v\n", section, sectionHeader)
+
 		binary.Write(peBuf, binary.LittleEndian, sectionHeader)
 		bytesWritten += uint64(binary.Size(sectionHeader))
 	}
 
 	// write sections' data
 	for idx, sectionHeader := range sectionHeaders {
-		sectionData, err := peFile.Sections[idx].Data()
+		section := peFile.Sections[idx]
+		sectionData, err := section.Data()
 		if err != nil {
 			return nil, err
+		}
+		if sectionData == nil { // for sections that weren't in the original file
+			sectionData = make([]byte, len(peFile.InsertionBytes))
 		}
 
 		// pad section if there is a gap between PointerToRawData end of last section
@@ -96,6 +103,18 @@ func (peFile *File) Bytes() ([]byte, error) {
 			paddingSize := sectionHeader.PointerToRawData - uint32(bytesWritten)
 			padding := make([]byte, paddingSize, paddingSize)
 			sectionData = append(padding, sectionData...)
+		}
+
+		// if our scaddr address is inside this section, insert it at the correct offset in sectionData
+		if peFile.InsertionAddr >= section.Offset && peFile.InsertionAddr < (section.Offset+section.Size-uint32(len(peFile.InsertionBytes))) {
+			sectionRelativeAddr := peFile.InsertionAddr - section.Offset
+			for i := 0; i < len(peFile.InsertionBytes); i++ {
+				sectionData[sectionRelativeAddr] = peFile.InsertionBytes[i]
+				sectionRelativeAddr++
+			}
+			paddingSize := sectionHeader.SizeOfRawData - uint32(len(sectionData))
+			padding := make([]byte, paddingSize, paddingSize)
+			sectionData = append(sectionData, padding...)
 		}
 
 		binary.Write(peBuf, binary.LittleEndian, sectionData)
@@ -143,7 +162,7 @@ func (peFile *File) Bytes() ([]byte, error) {
 			certTableLoc = int64(peFile.DosHeader.AddressOfNewExeHeader) + 24 + 144
 		}
 
-		peData = append(peData[:certTableLoc], append(certTableInfoBuf.Bytes(), peData[int(certTableLoc) + binary.Size(certTableInfo):]...)...)
+		peData = append(peData[:certTableLoc], append(certTableInfoBuf.Bytes(), peData[int(certTableLoc)+binary.Size(certTableInfo):]...)...)
 	}
 
 	return peData, nil

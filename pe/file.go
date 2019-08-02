@@ -22,15 +22,18 @@ const seekStart = 0
 // A File represents an open PE file.
 type File struct {
 	DosHeader
-	DosStub		   	 [64]byte	 // TODO(capnspacehook) make slice and correctly parse any DOS stub
-	RichHeader		 []byte
+	DosStub    [64]byte // TODO(capnspacehook) make slice and correctly parse any DOS stub
+	RichHeader []byte
 	FileHeader
-	OptionalHeader 	 interface{} // of type *OptionalHeader32 or *OptionalHeader64
-	Sections       	 []*Section
-	Symbols        	 []*Symbol    // COFF symbols with auxiliary symbol records removed
-	COFFSymbols    	 []COFFSymbol // all COFF symbols (including auxiliary symbol records)
-	StringTable    	 StringTable
+	OptionalHeader   interface{} // of type *OptionalHeader32 or *OptionalHeader64
+	Sections         []*Section
+	Symbols          []*Symbol    // COFF symbols with auxiliary symbol records removed
+	COFFSymbols      []COFFSymbol // all COFF symbols (including auxiliary symbol records)
+	StringTable      StringTable
 	CertificateTable []byte
+
+	InsertionAddr  uint32
+	InsertionBytes []byte
 
 	closer io.Closer
 }
@@ -79,11 +82,11 @@ func NewFile(r io.ReaderAt) (*File, error) {
 
 	possibleRichHeaderStart := (binary.Size(f.DosHeader) + binary.Size(f.DosStub))
 	possibleRichHeaderEnd := int(f.DosHeader.AddressOfNewExeHeader)
-	richHeader := make([]byte, possibleRichHeaderEnd - possibleRichHeaderStart)
+	richHeader := make([]byte, possibleRichHeaderEnd-possibleRichHeaderStart)
 	binary.Read(sr, binary.LittleEndian, richHeader)
 
 	if richIndex := bytes.Index(richHeader, []byte("Rich")); richIndex != -1 {
-		f.RichHeader = richHeader[:richIndex + 8]
+		f.RichHeader = richHeader[:richIndex+8]
 	}
 
 	var peHeaderOffset int64
@@ -128,7 +131,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	}
 
 	// Read optional header.
-	sr.Seek(peHeaderOffset + int64(binary.Size(f.FileHeader)), seekStart)
+	sr.Seek(peHeaderOffset+int64(binary.Size(f.FileHeader)), seekStart)
 
 	var oh32 OptionalHeader32
 	var oh64 OptionalHeader64
@@ -165,7 +168,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		s := new(Section)
 		s.SectionHeader = SectionHeader{
 			Name:                 name,
-			OriginalName:		  sh.Name,
+			OriginalName:         sh.Name,
 			VirtualSize:          sh.VirtualSize,
 			VirtualAddress:       sh.VirtualAddress,
 			Size:                 sh.SizeOfRawData,

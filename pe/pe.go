@@ -5,25 +5,25 @@
 package pe
 
 type DosHeader struct {
-	MZSignature 		 		uint16
-	UsedBytesInTheLastPage		uint16
-	FileSizeInPages				uint16
-	NumberOfRelocationItems		uint16
-	HeaderSizeInParagraphs		uint16
-	MinimumExtraParagraphs  	uint16
-	MaximumExtraParagraphs		uint16
-	InitialRelativeSS			uint16
-	InitialSP					uint16
-	CheckSum					uint16
-	InitialIP					uint16
-	InitialRelativeCS			uint16
-	AddressOfRelocationTable	uint16
-	OverlayNumber				uint16
-	Reserved					[4]uint16
-	OEMid						uint16
-	OEMinfo						uint16
-	Reserved2					[10]uint16
-	AddressOfNewExeHeader		uint32
+	MZSignature              uint16
+	UsedBytesInTheLastPage   uint16
+	FileSizeInPages          uint16
+	NumberOfRelocationItems  uint16
+	HeaderSizeInParagraphs   uint16
+	MinimumExtraParagraphs   uint16
+	MaximumExtraParagraphs   uint16
+	InitialRelativeSS        uint16
+	InitialSP                uint16
+	CheckSum                 uint16
+	InitialIP                uint16
+	InitialRelativeCS        uint16
+	AddressOfRelocationTable uint16
+	OverlayNumber            uint16
+	Reserved                 [4]uint16
+	OEMid                    uint16
+	OEMinfo                  uint16
+	Reserved2                [10]uint16
+	AddressOfNewExeHeader    uint32
 }
 
 type FileHeader struct {
