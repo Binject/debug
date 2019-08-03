@@ -95,26 +95,24 @@ func (peFile *File) Bytes() ([]byte, error) {
 			return nil, err
 		}
 		if sectionData == nil { // for sections that weren't in the original file
-			sectionData = make([]byte, len(peFile.InsertionBytes))
+			sectionData = []byte{}
 		}
-
-		// pad section if there is a gap between PointerToRawData end of last section
-		if sectionHeader.PointerToRawData != uint32(bytesWritten) {
-			paddingSize := sectionHeader.PointerToRawData - uint32(bytesWritten)
-			padding := make([]byte, paddingSize, paddingSize)
-			sectionData = append(padding, sectionData...)
+		if section.Offset != 0 && bytesWritten < uint64(section.Offset) {
+			pad := make([]byte, uint64(section.Offset)-bytesWritten)
+			peBuf.Write(pad)
+			log.Printf("Padding before section %s at %x: length:%x to:%x\n", section.Name, bytesWritten, len(pad), section.Offset)
+			bytesWritten += uint64(len(pad))
 		}
-
 		// if our scaddr address is inside this section, insert it at the correct offset in sectionData
 		if peFile.InsertionAddr >= section.Offset && peFile.InsertionAddr < (section.Offset+section.Size-uint32(len(peFile.InsertionBytes))) {
-			sectionRelativeAddr := peFile.InsertionAddr - section.Offset
 			for i := 0; i < len(peFile.InsertionBytes); i++ {
-				sectionData[sectionRelativeAddr] = peFile.InsertionBytes[i]
-				sectionRelativeAddr++
+				sectionData = append(sectionData, peFile.InsertionBytes[i])
 			}
-			paddingSize := sectionHeader.SizeOfRawData - uint32(len(sectionData))
-			padding := make([]byte, paddingSize, paddingSize)
-			sectionData = append(sectionData, padding...)
+			if sectionHeader.SizeOfRawData > uint32(len(sectionData)) {
+				paddingSize := sectionHeader.SizeOfRawData - uint32(len(sectionData))
+				padding := make([]byte, paddingSize, paddingSize)
+				sectionData = append(sectionData, padding...)
+			}
 		}
 
 		binary.Write(peBuf, binary.LittleEndian, sectionData)
