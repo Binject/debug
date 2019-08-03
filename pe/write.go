@@ -103,15 +103,15 @@ func (peFile *File) Bytes() ([]byte, error) {
 			log.Printf("Padding before section %s at %x: length:%x to:%x\n", section.Name, bytesWritten, len(pad), section.Offset)
 			bytesWritten += uint64(len(pad))
 		}
-		// if our scaddr address is inside this section, insert it at the correct offset in sectionData
-		if peFile.InsertionAddr >= section.Offset && peFile.InsertionAddr < (section.Offset+section.Size-uint32(len(peFile.InsertionBytes))) {
-			for i := 0; i < len(peFile.InsertionBytes); i++ {
-				sectionData = append(sectionData, peFile.InsertionBytes[i])
-			}
-			if sectionHeader.SizeOfRawData > uint32(len(sectionData)) {
-				paddingSize := sectionHeader.SizeOfRawData - uint32(len(sectionData))
+		// if our shellcode insertion address is inside this section, insert it at the correct offset in sectionData
+		if peFile.InsertionAddr >= section.Offset && int64(peFile.InsertionAddr) < (int64(section.Offset)+int64(section.Size)-int64(len(peFile.InsertionBytes))) {
+			sectionData = append(sectionData, peFile.InsertionBytes[:]...)
+			datalen := len(sectionData)
+			if sectionHeader.SizeOfRawData > uint32(datalen) {
+				paddingSize := sectionHeader.SizeOfRawData - uint32(datalen)
 				padding := make([]byte, paddingSize, paddingSize)
 				sectionData = append(sectionData, padding...)
+				log.Printf("Padding after section %s: length:%d\n", section.Name, paddingSize)
 			}
 		}
 
