@@ -100,7 +100,7 @@ func (peFile *File) Bytes() ([]byte, error) {
 		if section.Offset != 0 && bytesWritten < uint64(section.Offset) {
 			pad := make([]byte, uint64(section.Offset)-bytesWritten)
 			peBuf.Write(pad)
-			log.Printf("Padding before section %s at %x: length:%x to:%x\n", section.Name, bytesWritten, len(pad), section.Offset)
+			//log.Printf("Padding before section %s at %x: length:%x to:%x\n", section.Name, bytesWritten, len(pad), section.Offset)
 			bytesWritten += uint64(len(pad))
 		}
 		// if our shellcode insertion address is inside this section, insert it at the correct offset in sectionData
@@ -111,7 +111,7 @@ func (peFile *File) Bytes() ([]byte, error) {
 				paddingSize := sectionHeader.SizeOfRawData - uint32(datalen)
 				padding := make([]byte, paddingSize, paddingSize)
 				sectionData = append(sectionData, padding...)
-				log.Printf("Padding after section %s: length:%d\n", section.Name, paddingSize)
+				//log.Printf("Padding after section %s: length:%d\n", section.Name, paddingSize)
 			}
 		}
 
