@@ -15,8 +15,10 @@ func (peFile *File) Bytes() ([]byte, error) {
 	// write DOS header and stub
 	binary.Write(peBuf, binary.LittleEndian, peFile.DosHeader)
 	bytesWritten += uint64(binary.Size(peFile.DosHeader))
-	binary.Write(peBuf, binary.LittleEndian, peFile.DosStub)
-	bytesWritten += uint64(binary.Size(peFile.DosStub))
+	if peFile.DosExists {
+		binary.Write(peBuf, binary.LittleEndian, peFile.DosStub)
+		bytesWritten += uint64(binary.Size(peFile.DosStub))
+	}
 
 	// write Rich header
 	if peFile.RichHeader != nil {

@@ -22,6 +22,7 @@ const seekStart = 0
 // A File represents an open PE file.
 type File struct {
 	DosHeader
+	DosExists  bool
 	DosStub    [64]byte // TODO(capnspacehook) make slice and correctly parse any DOS stub
 	RichHeader []byte
 	FileHeader
@@ -78,15 +79,26 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	sr := io.NewSectionReader(r, 0, 1<<63-1)
 
 	binary.Read(sr, binary.LittleEndian, &f.DosHeader)
-	binary.Read(sr, binary.LittleEndian, &f.DosStub)
+	dosHeaderSize := binary.Size(f.DosHeader)
+	if dosHeaderSize > int(f.DosHeader.AddressOfNewExeHeader) {
+		binary.Read(sr, binary.LittleEndian, &f.DosStub)
+		f.DosExists = true
+	} else {
+		f.DosExists = false
+	}
 
-	possibleRichHeaderStart := (binary.Size(f.DosHeader) + binary.Size(f.DosStub))
+	possibleRichHeaderStart := dosHeaderSize
+	if f.DosExists {
+		possibleRichHeaderStart += binary.Size(f.DosStub)
+	}
 	possibleRichHeaderEnd := int(f.DosHeader.AddressOfNewExeHeader)
-	richHeader := make([]byte, possibleRichHeaderEnd-possibleRichHeaderStart)
-	binary.Read(sr, binary.LittleEndian, richHeader)
+	if possibleRichHeaderEnd > possibleRichHeaderStart {
+		richHeader := make([]byte, possibleRichHeaderEnd-possibleRichHeaderStart)
+		binary.Read(sr, binary.LittleEndian, richHeader)
 
-	if richIndex := bytes.Index(richHeader, []byte("Rich")); richIndex != -1 {
-		f.RichHeader = richHeader[:richIndex+8]
+		if richIndex := bytes.Index(richHeader, []byte("Rich")); richIndex != -1 {
+			f.RichHeader = richHeader[:richIndex+8]
+		}
 	}
 
 	var peHeaderOffset int64
