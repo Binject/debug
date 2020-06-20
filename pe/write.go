@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"log"
 	"os"
 )
 
@@ -83,7 +82,7 @@ func (peFile *File) Bytes() ([]byte, error) {
 		}
 		sectionHeaders[idx] = sectionHeader
 
-		log.Printf("section: %+v\nsectionHeader: %+v\n", section, sectionHeader)
+		//log.Printf("section: %+v\nsectionHeader: %+v\n", section, sectionHeader)
 
 		binary.Write(peBuf, binary.LittleEndian, sectionHeader)
 		bytesWritten += uint64(binary.Size(sectionHeader))
