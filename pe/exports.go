@@ -95,24 +95,37 @@ func (f *File) Exports() ([]Export, error) {
 
 	dt.DllName, _ = getString(d, int(dt.NameRVA-ds.VirtualAddress))
 
-	// seek to address table
-	dna := d[dt.AddressTableAddr-ds.VirtualAddress:]
 	// seek to ordinal table
 	dno := d[dt.OrdinalTableAddr-ds.VirtualAddress:]
 	// seek to names table
 	dnn := d[dt.NameTableAddr-ds.VirtualAddress:]
 
-	var exports []Export
-	var i uint32
-	for i = 0; i < dt.NumberOfFunctions; i++ {
-		var export Export
-		export.Ordinal = dt.OrdinalBase +
-			uint32(binary.LittleEndian.Uint16(dno[i*2:(i*2)+2]))
+	// build whole ordinal->name table
+	ordinalTable := make(map[uint16]uint32)
+	for n := uint32(0); n < dt.NumberOfNames; n++ {
+		ord := binary.LittleEndian.Uint16(dno[n*2 : (n*2)+2])
+		nameRVA := binary.LittleEndian.Uint32(dnn[n*4 : (n*4)+4])
+		ordinalTable[ord] = nameRVA
+	}
+	dno = nil
+	dnn = nil
 
-		nameRVA := uint32(binary.LittleEndian.Uint32(dnn[i*4 : (i*4)+4]))
-		export.Name, _ = getString(d, int(nameRVA-ds.VirtualAddress))
+	// seek to ordinal table
+	dna := d[dt.AddressTableAddr-ds.VirtualAddress:]
+
+	var exports []Export
+	for i := uint32(0); i < dt.NumberOfFunctions; i++ {
+		var export Export
 		export.VirtualAddress =
 			binary.LittleEndian.Uint32(dna[i*4 : (i*4)+4])
+		export.Ordinal = dt.OrdinalBase + i
+
+		// check the entire ordinal table looking for this index to see if we have a name
+		_, ok := ordinalTable[uint16(i)]
+		if ok { // a name exists for this exported function
+			nameRVA, _ := ordinalTable[uint16(i)]
+			export.Name, _ = getString(d, int(nameRVA-ds.VirtualAddress))
+		}
 		exports = append(exports, export)
 	}
 	return exports, nil
