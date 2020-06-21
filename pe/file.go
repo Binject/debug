@@ -73,8 +73,19 @@ var (
 
 // TODO(brainman): add Load function, as a replacement for NewFile, that does not call removeAuxSymbols (for performance)
 
-// NewFile creates a new File for accessing a PE binary in an underlying reader.
+// NewFile creates a new pe.File for accessing a PE binary file in an underlying reader.
 func NewFile(r io.ReaderAt) (*File, error) {
+	return newFileInternal(r, false)
+}
+
+// NewFileFromMemory creates a new pe.File for accessing a PE binary in-memory image in an underlying reader.
+func NewFileFromMemory(r io.ReaderAt) (*File, error) {
+	return newFileInternal(r, true)
+}
+
+// NewFile creates a new File for accessing a PE binary in an underlying reader.
+func newFileInternal(r io.ReaderAt, memoryMode bool) (*File, error) {
+
 	f := new(File)
 	sr := io.NewSectionReader(r, 0, 1<<63-1)
 
@@ -195,7 +206,11 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		if sh.PointerToRawData == 0 { // .bss must have all 0s
 			r2 = zeroReaderAt{}
 		}
-		s.sr = io.NewSectionReader(r2, int64(s.SectionHeader.Offset), int64(s.SectionHeader.Size))
+		if !memoryMode {
+			s.sr = io.NewSectionReader(r2, int64(s.SectionHeader.Offset), int64(s.SectionHeader.Size))
+		} else {
+			s.sr = io.NewSectionReader(r2, int64(s.SectionHeader.VirtualAddress), int64(s.SectionHeader.Size))
+		}
 		s.ReaderAt = s.sr
 		f.Sections[i] = s
 	}
