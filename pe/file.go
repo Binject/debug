@@ -497,3 +497,14 @@ type FormatError struct {
 func (e *FormatError) Error() string {
 	return "unknown error"
 }
+
+//RVAToFileOffset Converts a Relative offset to the actual offset in the file.
+func (f *File) RVAToFileOffset(rva uint32) uint32 {
+	var offset uint32
+	for _, section := range f.Sections {
+		if rva >= section.SectionHeader.VirtualAddress && rva <= section.SectionHeader.VirtualAddress+section.SectionHeader.Size {
+			offset = section.SectionHeader.Offset + (rva - section.SectionHeader.VirtualAddress)
+		}
+	}
+	return offset
+}
