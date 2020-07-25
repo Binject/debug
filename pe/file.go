@@ -508,3 +508,19 @@ func (f *File) RVAToFileOffset(rva uint32) uint32 {
 	}
 	return offset
 }
+
+//IsManaged returns true if the loaded PE file references the CLR header (aka is a .net exe)
+func (f *File) IsManaged() bool {
+	switch v := f.OptionalHeader.(type) {
+	case *OptionalHeader32:
+		if v.DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].VirtualAddress != 0 {
+			return true
+		}
+	case *OptionalHeader64:
+		if v.DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].VirtualAddress != 0 {
+			return true
+		}
+	}
+
+	return false
+}
