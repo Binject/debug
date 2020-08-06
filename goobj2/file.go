@@ -25,28 +25,17 @@ import (
 
 // A Package is a parsed Go object file or archive defining a Go package.
 type Package struct {
-	Header        Header
-	ImportPath    string        // import path denoting this package
-	Imports       []ImportedPkg // packages imported by this package
+	Header        goobj2.Header
+	ImportPath    string               // import path denoting this package
+	Imports       []goobj2.ImportedPkg // packages imported by this package
 	Packages      []string
-	DWARFFileList []string        // List of files for the DWARF .debug_lines section
-	SymRefs       []SymID         // list of symbol names and versions referred to by this pack
-	Syms          []*Sym          // symbols defined by this package
-	MaxVersion    int64           // maximum Version in any SymID in Syms
-	Arch          string          // architecture
-	Native        []*NativeReader // native object data (e.g. ELF)
-}
-
-type Header struct {
-	Magic       string
-	Fingerprint [8]byte
-	Flags       uint32
-	offsets     [goobj2.NBlk]uint32
-}
-
-type ImportedPkg struct {
-	Pkg         string
-	Fingerprint [8]byte
+	DWARFFileList []string // List of files for the DWARF .debug_lines section
+	SymDefs       []*Sym
+	NonPkgSymDefs []*Sym
+	NonPkgSymRefs []*Sym
+	SymRefs       []SymRef
+	MaxVersion    int64  // maximum Version in any SymID in Syms NOT NEEDED
+	Arch          string // architecture
 }
 
 // A Sym is a named symbol in an object file.
@@ -73,6 +62,13 @@ type SymID struct {
 	// a symbol in one file from a symbol of the same name
 	// in another file
 	Version int64
+
+	goobj2.SymRef
+}
+
+type SymRef struct {
+	Name string
+	goobj2.SymRef
 }
 
 func (s SymID) String() string {
@@ -155,11 +151,6 @@ type InlinedCall struct {
 	Line     int64
 	Func     SymID
 	ParentPC int64
-}
-
-type NativeReader struct {
-	Name string
-	io.ReaderAt
 }
 
 var (
@@ -302,43 +293,6 @@ func (r *objReader) readString() string {
 	return string(buf)
 }
 
-// readSymID reads a SymID from the input file.
-func (r *objReader) readSymID() SymID {
-	i := r.readInt()
-	return r.p.SymRefs[i]
-}
-
-func (r *objReader) readRef() {
-	name, abiOrStatic := r.readString(), r.readInt()
-
-	// In a symbol name in an object file, "". denotes the
-	// prefix for the package in which the object file has been found.
-	// Expand it.
-	name = strings.ReplaceAll(name, `"".`, r.pkgprefix)
-
-	// The ABI field records either the ABI or -1 for static symbols.
-	//
-	// To distinguish different static symbols with the same name,
-	// we use the symbol "version". Version 0 corresponds to
-	// global symbols, and each file has a unique version > 0 for
-	// all of its static symbols. The version is incremented on
-	// each call to parseObject.
-	//
-	// For global symbols, we currently ignore the ABI.
-	//
-	// TODO(austin): Record the ABI in SymID. Since this is a
-	// public API, we'll have to keep Version as 0 and record the
-	// ABI in a new field (which differs from how the linker does
-	// this, but that's okay). Show the ABI in things like
-	// objdump.
-	var vers int64
-	if abiOrStatic == -1 {
-		// Static symbol
-		vers = r.p.MaxVersion
-	}
-	r.p.SymRefs = append(r.p.SymRefs, SymID{name, vers})
-}
-
 // readData reads a data reference from the input file.
 func (r *objReader) readData() Data {
 	n := r.readInt()
@@ -472,11 +426,6 @@ func (r *objReader) parseArchive() error {
 				if err := r.parseObject(nil); err != nil {
 					return fmt.Errorf("parsing archive member %q: %v", name, err)
 				}
-			} else {
-				r.p.Native = append(r.p.Native, &NativeReader{
-					Name:     name,
-					ReaderAt: io.NewSectionReader(r.f, r.offset, size),
-				})
 			}
 
 			r.skip(r.limit - r.offset)
@@ -538,13 +487,12 @@ func (r *objReader) parseObject(prefix []byte) error {
 		return errCorruptObject
 	}
 
+	// Header
+	r.p.Header = rr.Header()
+
 	// Imports
-	autolib := rr.Autolib()
-	for _, p := range autolib {
-		r.p.Imports = append(r.p.Imports, ImportedPkg{
-			Pkg:         p.Pkg,
-			Fingerprint: p.Fingerprint,
-		})
+	for _, p := range rr.Autolib() {
+		r.p.Imports = append(r.p.Imports, p)
 	}
 
 	// Referenced packages
@@ -585,50 +533,47 @@ func (r *objReader) parseObject(prefix []byte) error {
 			i = int(s.SymIdx) + rr.NSym()
 		case goobj2.PkgIdxBuiltin:
 			name, abi := goobj2.BuiltinName(int(s.SymIdx))
-			return SymID{name, int64(abi)}
+			return SymID{name, int64(abi), s}
 		case goobj2.PkgIdxSelf:
 			i = int(s.SymIdx)
 		default:
-			return SymID{refNames[s], 0}
+			return SymID{refNames[s], 0, s}
 		}
 		sym := rr.Sym(i)
-		return SymID{sym.Name(rr), abiToVer(sym.ABI())}
+		return SymID{sym.Name(rr), abiToVer(sym.ABI()), s}
 	}
 
 	// Read things for the current goobj API for now.
 
 	// Symbols
 	pcdataBase := start + rr.PcdataBase()
-	n := rr.NSym() + rr.NNonpkgdef() + rr.NNonpkgref()
 	ndef := rr.NSym() + rr.NNonpkgdef()
-	for i := 0; i < n; i++ {
+
+	// TODO: fix last few entries of NonPkgRefs names
+	parseSym := func(i, j int, symDefs []*Sym) {
 		osym := rr.Sym(i)
-		if osym.Name(rr) == "" {
-			continue // not a real symbol
+		name := osym.Name(rr)
+		if name == "" {
+			return // not a real symbol
 		}
-		// In a symbol name in an object file, "". denotes the
-		// prefix for the package in which the object file has been found.
-		// Expand it.
-		name := strings.ReplaceAll(osym.Name(rr), `"".`, r.pkgprefix)
 		symID := SymID{Name: name, Version: abiToVer(osym.ABI())}
-		r.p.SymRefs = append(r.p.SymRefs, symID)
+
+		sym := &Sym{
+			SymID: symID,
+			Kind:  objabi.SymKind(osym.Type()),
+			DupOK: osym.Dupok(),
+			Size:  int64(osym.Siz()),
+		}
+		symDefs[j] = sym
 
 		if i >= ndef {
-			continue // not a defined symbol from here
+			return // not a defined symbol from here
 		}
 
 		// Symbol data
 		dataOff := rr.DataOff(i)
 		siz := int64(rr.DataSize(i))
-
-		sym := Sym{
-			SymID: symID,
-			Kind:  objabi.SymKind(osym.Type()),
-			DupOK: osym.Dupok(),
-			Size:  int64(osym.Siz()),
-			Data:  Data{int64(start + dataOff), siz},
-		}
-		r.p.Syms = append(r.p.Syms, &sym)
+		sym.Data = Data{int64(start + dataOff), siz}
 
 		// Reloc
 		relocs := rr.Relocs(i)
@@ -669,7 +614,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 
 		// Symbol Info
 		if isym == -1 {
-			continue
+			return
 		}
 		b := rr.BytesAt(rr.DataOff(isym), rr.DataSize(isym))
 		info := goobj2.FuncInfo{}
@@ -713,6 +658,35 @@ func (r *objReader) parseObject(prefix []byte) error {
 				ParentPC: int64(inl.ParentPC),
 			}
 		}
+	}
+
+	// Symbol definitions
+	nsymDefs := rr.NSym()
+	r.p.SymDefs = make([]*Sym, nsymDefs)
+	for i := 0; i < nsymDefs; i++ {
+		parseSym(i, i, r.p.SymDefs)
+	}
+
+	// Non-pkg symbol definitions
+	nNonPkgDefs := rr.NNonpkgdef()
+	r.p.NonPkgSymDefs = make([]*Sym, nNonPkgDefs)
+	parsedSyms := nsymDefs
+	for i := 0; i < nNonPkgDefs; i++ {
+		parseSym(i+parsedSyms, i, r.p.NonPkgSymDefs)
+	}
+
+	// Non-pkg symbol references
+	nNonPkgRefs := rr.NNonpkgdef()
+	r.p.NonPkgSymRefs = make([]*Sym, nNonPkgRefs)
+	parsedSyms += nNonPkgDefs
+	for i := 0; i < nNonPkgRefs; i++ {
+		parseSym(i+parsedSyms, i, r.p.NonPkgSymRefs)
+	}
+
+	// Symbol references
+	r.p.SymRefs = make([]SymRef, 0, len(refNames))
+	for symRef, name := range refNames {
+		r.p.SymRefs = append(r.p.SymRefs, SymRef{name, symRef})
 	}
 
 	return nil
