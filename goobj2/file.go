@@ -33,22 +33,22 @@ type Package struct {
 	SymDefs       []*Sym
 	NonPkgSymDefs []*Sym
 	NonPkgSymRefs []*Sym
-	SymRefs       []SymRef
+	SymRefs       []*goobj2.SymRef
 	MaxVersion    int64  // maximum Version in any SymID in Syms NOT NEEDED
 	Arch          string // architecture
 }
 
 // A Sym is a named symbol in an object file.
 type Sym struct {
-	SymID // symbol identifier (name and version)
+	Name  string
 	ABI   uint16
 	Kind  objabi.SymKind // kind of symbol
 	Flag  uint8
-	Size  int64   // size of corresponding data
-	Type  SymID   // symbol for Go type information
-	Data  []byte  // memory image of symbol
-	Reloc []Reloc // relocations to apply to Data
-	Func  *Func   // additional data for functions
+	Size  int64          // size of corresponding data
+	Type  *goobj2.SymRef // symbol for Go type information
+	Data  []byte         // memory image of symbol
+	Reloc []Reloc        // relocations to apply to Data
+	Func  *Func          // additional data for functions
 }
 
 // A SymID - the combination of Name and Version - uniquely identifies
@@ -63,13 +63,6 @@ type SymID struct {
 	// a symbol in one file from a symbol of the same name
 	// in another file
 	Version int64
-
-	goobj2.SymRef
-}
-
-type SymRef struct {
-	Name string
-	goobj2.SymRef
 }
 
 func (s SymID) String() string {
@@ -87,7 +80,7 @@ type Reloc struct {
 	// of the symbol Sym.
 	Offset int64
 	Size   int64
-	Sym    SymID
+	Sym    goobj2.SymRef
 	Add    int64
 
 	// The Type records the form of address expected in the bytes
@@ -126,14 +119,20 @@ type Func struct {
 	FuncData []FuncData // non-PC-specific runtime support data
 	File     []string   // paths indexed by PCFile
 	InlTree  []InlinedCall
+
+	FuncInfo        *goobj2.SymRef
+	DwarfInfo       *goobj2.SymRef
+	DwarfLoc        *goobj2.SymRef
+	DwarfRanges     *goobj2.SymRef
+	DwarfDebugLines *goobj2.SymRef
 }
 
 // TODO: Add PCData []byte and PCDataIter (similar to liblink).
 
 // A FuncData is a single function-specific data value.
 type FuncData struct {
-	Sym    SymID // symbol holding data
-	Offset int64 // offset into symbol for funcdata pointer
+	Sym    *goobj2.SymRef // symbol holding data
+	Offset int64          // offset into symbol for funcdata pointer
 }
 
 // An InlinedCall is a node in an InlTree.
@@ -142,7 +141,7 @@ type InlinedCall struct {
 	Parent   int64
 	File     string
 	Line     int64
-	Func     SymID
+	Func     *goobj2.SymRef
 	ParentPC int64
 }
 
@@ -486,38 +485,27 @@ func (r *objReader) parseObject(prefix []byte) error {
 		refNames[rn.Sym()] = rn.Name(rr)
 	}
 
-	abiToVer := func(abi uint16) int64 {
-		var vers int64
-		if abi == goobj2.SymABIstatic {
-			// Static symbol
-			vers = r.p.MaxVersion
-		}
-		return vers
-	}
-
-	resolveSymRef := func(s goobj2.SymRef) SymID {
+	resolveSymRefName := func(s goobj2.SymRef) string {
 		var i int
 		switch p := s.PkgIdx; p {
 		case goobj2.PkgIdxInvalid:
 			if s.SymIdx != 0 {
 				panic("bad sym ref")
 			}
-			return SymID{}
+			return ""
 		case goobj2.PkgIdxNone:
 			i = int(s.SymIdx) + rr.NSym()
 		case goobj2.PkgIdxBuiltin:
-			name, abi := goobj2.BuiltinName(int(s.SymIdx))
-			return SymID{name, int64(abi), s}
+			name, _ := goobj2.BuiltinName(int(s.SymIdx))
+			return name
 		case goobj2.PkgIdxSelf:
 			i = int(s.SymIdx)
 		default:
-			return SymID{refNames[s], 0, s}
+			return refNames[s]
 		}
 		sym := rr.Sym(i)
-		return SymID{sym.Name(rr), abiToVer(sym.ABI()), s}
+		return sym.Name(rr)
 	}
-
-	// Read things for the current goobj API for now.
 
 	// Symbols
 	pcdataBase := rr.PcdataBase()
@@ -526,14 +514,13 @@ func (r *objReader) parseObject(prefix []byte) error {
 	// TODO: fix last few entries of NonPkgRefs names
 	parseSym := func(i, j int, symDefs []*Sym) {
 		osym := rr.Sym(i)
-		symID := SymID{Name: osym.Name(rr), Version: abiToVer(osym.ABI())}
 
 		sym := &Sym{
-			ABI:   osym.ABI(),
-			SymID: symID,
-			Kind:  objabi.SymKind(osym.Type()),
-			Flag:  osym.Flag(),
-			Size:  int64(osym.Siz()),
+			Name: osym.Name(rr),
+			ABI:  osym.ABI(),
+			Kind: objabi.SymKind(osym.Type()),
+			Flag: osym.Flag(),
+			Size: int64(osym.Siz()),
 		}
 		symDefs[j] = sym
 
@@ -554,28 +541,43 @@ func (r *objReader) parseObject(prefix []byte) error {
 				Size:   int64(rel.Siz()),
 				Type:   objabi.RelocType(rel.Type()),
 				Add:    rel.Add(),
-				Sym:    resolveSymRef(rel.Sym()),
+				Sym:    rel.Sym(),
 			}
 		}
 
 		// Aux symbol info
 		isym := -1
-		funcdata := make([]goobj2.SymRef, 0, 4)
+		funcdata := make([]*goobj2.SymRef, 0, 4)
+		var funcInfo, dinfo, dloc, dranges, dlines *goobj2.SymRef
 		auxs := rr.Auxs(i)
 		for j := range auxs {
 			a := &auxs[j]
 			switch a.Type() {
 			case goobj2.AuxGotype:
-				sym.Type = resolveSymRef(a.Sym())
+				s := a.Sym()
+				sym.Type = &s
 			case goobj2.AuxFuncInfo:
-				if a.Sym().PkgIdx != goobj2.PkgIdxSelf {
+				sr := a.Sym()
+				if sr.PkgIdx != goobj2.PkgIdxSelf {
 					panic("funcinfo symbol not defined in current package")
 				}
+				funcInfo = &sr
 				isym = int(a.Sym().SymIdx)
 			case goobj2.AuxFuncdata:
-				funcdata = append(funcdata, a.Sym())
-			case goobj2.AuxDwarfInfo, goobj2.AuxDwarfLoc, goobj2.AuxDwarfRanges, goobj2.AuxDwarfLines:
-				// nothing to do
+				sr := a.Sym()
+				funcdata = append(funcdata, &sr)
+			case goobj2.AuxDwarfInfo:
+				sr := a.Sym()
+				dinfo = &sr
+			case goobj2.AuxDwarfLoc:
+				sr := a.Sym()
+				dloc = &sr
+			case goobj2.AuxDwarfRanges:
+				sr := a.Sym()
+				dranges = &sr
+			case goobj2.AuxDwarfLines:
+				sr := a.Sym()
+				dlines = &sr
 			default:
 				panic("unknown aux type")
 			}
@@ -604,28 +606,39 @@ func (r *objReader) parseObject(prefix []byte) error {
 			FuncData: make([]FuncData, len(info.Funcdataoff)),
 			File:     make([]string, len(info.File)),
 			InlTree:  make([]InlinedCall, len(info.InlTree)),
+			FuncInfo: funcInfo,
 		}
 		sym.Func = f
 		for k := range f.PCData {
 			f.PCData[k] = rr.BytesAt(pcdataBase+info.Pcdata[k], int(info.Pcdata[k+1]-info.Pcdata[k]))
 		}
 		for k := range f.FuncData {
-			symID := resolveSymRef(funcdata[k])
-			f.FuncData[k] = FuncData{symID, int64(info.Funcdataoff[k])}
+			f.FuncData[k] = FuncData{funcdata[k], int64(info.Funcdataoff[k])}
 		}
 		for k := range f.File {
-			symID := resolveSymRef(info.File[k])
-			f.File[k] = symID.Name
+			f.File[k] = resolveSymRefName(info.File[k])
 		}
 		for k := range f.InlTree {
 			inl := &info.InlTree[k]
 			f.InlTree[k] = InlinedCall{
 				Parent:   int64(inl.Parent),
-				File:     resolveSymRef(inl.File).Name,
+				File:     resolveSymRefName(inl.File),
 				Line:     int64(inl.Line),
-				Func:     resolveSymRef(inl.Func),
+				Func:     &inl.Func,
 				ParentPC: int64(inl.ParentPC),
 			}
+		}
+		if dinfo != nil {
+			f.DwarfInfo = dinfo
+		}
+		if dloc != nil {
+			f.DwarfLoc = dloc
+		}
+		if dranges != nil {
+			f.DwarfRanges = dranges
+		}
+		if dlines != nil {
+			f.DwarfDebugLines = dlines
 		}
 	}
 
@@ -653,25 +666,10 @@ func (r *objReader) parseObject(prefix []byte) error {
 	}
 
 	// Symbol references
-	r.p.SymRefs = make([]SymRef, 0, len(refNames))
-	for symRef, name := range refNames {
-		r.p.SymRefs = append(r.p.SymRefs, SymRef{name, symRef})
+	r.p.SymRefs = make([]*goobj2.SymRef, 0, len(refNames))
+	for symRef := range refNames {
+		r.p.SymRefs = append(r.p.SymRefs, &symRef)
 	}
 
 	return nil
-}
-
-func (r *Reloc) String(insnOffset uint64) string {
-	delta := r.Offset - int64(insnOffset)
-	s := fmt.Sprintf("[%d:%d]%s", delta, delta+r.Size, r.Type)
-	if r.Sym.Name != "" {
-		if r.Add != 0 {
-			return fmt.Sprintf("%s:%s+%d", s, r.Sym.Name, r.Add)
-		}
-		return fmt.Sprintf("%s:%s", s, r.Sym.Name)
-	}
-	if r.Add != 0 {
-		return fmt.Sprintf("%s:%d", s, r.Add)
-	}
-	return s
 }

@@ -26,7 +26,7 @@ func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
 		pkgpath: objabi.PathToPrefix(pkgpath),
 	}
 
-	//start := b.Offset()
+	start := b.Offset()
 
 	// Header
 	// We just reserve the space. We'll fill in the offsets later.
@@ -84,7 +84,7 @@ func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
 	w.Uint32(nreloc)
 
 	// Symbol Info indexes
-	/*ctxt.Header.Offsets[goobj2.BlkAuxIdx] = w.Offset()
+	ctxt.Header.Offsets[goobj2.BlkAuxIdx] = w.Offset()
 	naux := uint32(0)
 	for _, list := range lists {
 		for _, s := range list {
@@ -92,7 +92,7 @@ func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
 			naux += uint32(nAuxSym(s))
 		}
 	}
-	w.Uint32(naux)*/
+	w.Uint32(naux)
 
 	// Data indexes
 	ctxt.Header.Offsets[goobj2.BlkDataIdx] = w.Offset()
@@ -106,11 +106,11 @@ func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
 	w.Uint32(dataOff)
 
 	// Relocs
-	/*ctxt.Header.Offsets[goobj2.BlkReloc] = w.Offset()
+	ctxt.Header.Offsets[goobj2.BlkReloc] = w.Offset()
 	for _, list := range lists {
 		for _, s := range list {
-			for i := range s.R {
-				w.Reloc(&s.R[i])
+			for i := range s.Reloc {
+				w.Reloc(&s.Reloc[i])
 			}
 		}
 	}
@@ -121,7 +121,7 @@ func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
 		for _, s := range list {
 			w.Aux(s)
 		}
-	}*/
+	}
 
 	// Data
 	ctxt.Header.Offsets[goobj2.BlkData] = w.Offset()
@@ -132,16 +132,18 @@ func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
 	}
 
 	// Pcdata
-	/*ctxt.Header.Offsets[goobj2.BlkPcdata] = w.Offset()
-	for _, s := range ctxt.Text { // iteration order must match genFuncInfoSyms
-		if s.Func != nil {
-			pc := &s.Func.Pcln
-			w.Bytes(pc.Pcsp.P)
-			w.Bytes(pc.Pcfile.P)
-			w.Bytes(pc.Pcline.P)
-			w.Bytes(pc.Pcinline.P)
-			for i := range pc.Pcdata {
-				w.Bytes(pc.Pcdata[i].P)
+	ctxt.Header.Offsets[goobj2.BlkPcdata] = w.Offset()
+	symDefs := [][]*Sym{ctxt.SymDefs, ctxt.NonPkgSymDefs}
+	for _, list := range symDefs { // iteration order must match genFuncInfoSyms
+		for _, s := range list {
+			if s.Func != nil {
+				w.Bytes(s.Func.PCSP)
+				w.Bytes(s.Func.PCFile)
+				w.Bytes(s.Func.PCLine)
+				w.Bytes(s.Func.PCInline)
+				for i := range s.Func.PCData {
+					w.Bytes(s.Func.PCData[i])
+				}
 			}
 		}
 	}
@@ -149,8 +151,8 @@ func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
 	// Blocks used only by tools (objdump, nm).
 
 	// Referenced symbol names from other packages
-	ctxt.Header.Offsets[goobj2.BlkRefName] = w.Offset()
-	w.refNames()
+	/*ctxt.Header.Offsets[goobj2.BlkRefName] = w.Offset()
+	w.refNames()*/
 
 	ctxt.Header.Offsets[goobj2.BlkEnd] = w.Offset()
 
@@ -158,7 +160,7 @@ func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
 	end := start + int64(w.Offset())
 	b.MustSeek(start, 0)
 	ctxt.Header.Write(w.Writer)
-	b.MustSeek(end, 0)*/
+	b.MustSeek(end, 0)
 }
 
 type writer struct {
@@ -180,17 +182,11 @@ func (w *writer) StringTable() {
 	syms := [][]*Sym{w.ctxt.SymDefs, w.ctxt.NonPkgSymDefs, w.ctxt.NonPkgSymRefs}
 	for _, list := range syms {
 		for _, s := range list {
-			// TODO: this includes references of indexed symbols from other packages,
-			// for which the linker doesn't need the name. Consider moving them to
-			// a separate block (for tools only).
-			if w.pkgpath != "" {
-				s.Name = strings.Replace(s.Name, "\"\".", w.pkgpath+".", -1)
-			}
 			w.AddString(s.Name)
 		}
 	}
 
-	/*for i, list := range syms {
+	for i, list := range syms {
 		// skip non-pkg symbol references
 		if i == 2 {
 			break
@@ -198,18 +194,16 @@ func (w *writer) StringTable() {
 
 		for _, s := range list {
 			if s.Kind != objabi.STEXT {
-				return
+				continue
 			}
-			pc := &s.Func.Pcln
-			for _, f := range pc.File {
+			for _, f := range s.Func.File {
 				w.AddString(filepath.ToSlash(f))
 			}
-			for _, call := range pc.InlTree.nodes {
-				f, _ := linkgetlineFromPos(w.ctxt, call.Pos)
-				w.AddString(filepath.ToSlash(f))
+			for _, call := range s.Func.InlTree {
+				w.AddString(filepath.ToSlash(call.File))
 			}
 		}
-	}*/
+	}
 
 	for _, f := range w.ctxt.DWARFFileList {
 		w.AddString(filepath.ToSlash(f))
@@ -235,63 +229,52 @@ func (w *writer) Sym(s *Sym) {
 	o.Write(w.Writer)
 }
 
-/*func makeSymRef(s *LSym) goobj2.SymRef {
-	if s == nil {
-		return goobj2.SymRef{}
-	}
-	if s.PkgIdx == 0 || !s.Indexed() {
-		fmt.Printf("unindexed symbol reference: %v\n", s)
-		panic("unindexed symbol reference")
-	}
-	return goobj2.SymRef{PkgIdx: uint32(s.PkgIdx), SymIdx: uint32(s.SymIdx)}
-}
-
 func (w *writer) Reloc(r *Reloc) {
 	var o goobj2.Reloc
 	o.SetOff(int32(r.Offset))
 	o.SetSiz(uint8(r.Size))
 	o.SetType(uint8(r.Type))
 	o.SetAdd(r.Add)
-	o.SetSym(makeSymRef(r.Sym))
+	o.SetSym(r.Sym)
 	o.Write(w.Writer)
 }
 
-func (w *writer) aux1(typ uint8, rs *LSym) {
+func (w *writer) aux1(typ uint8, rs goobj2.SymRef) {
 	var o goobj2.Aux
 	o.SetType(typ)
-	o.SetSym(makeSymRef(rs))
+	o.SetSym(rs)
 	o.Write(w.Writer)
 }
 
-func (w *writer) Aux(s *LSym) {
-	if s.Gotype != nil {
-		w.aux1(goobj2.AuxGotype, s.Gotype)
+func (w *writer) Aux(s *Sym) {
+	if s.Type != nil {
+		w.aux1(goobj2.AuxGotype, *s.Type)
 	}
 	if s.Func != nil {
-		w.aux1(goobj2.AuxFuncInfo, s.Func.FuncInfoSym)
+		w.aux1(goobj2.AuxFuncInfo, *s.Func.FuncInfo)
 
-		for _, d := range s.Func.Pcln.Funcdata {
-			w.aux1(goobj2.AuxFuncdata, d)
+		for _, d := range s.Func.FuncData {
+			w.aux1(goobj2.AuxFuncdata, *d.Sym)
 		}
 
-		if s.Func.dwarfInfoSym != nil && s.Func.dwarfInfoSym.Size != 0 {
-			w.aux1(goobj2.AuxDwarfInfo, s.Func.dwarfInfoSym)
+		if s.Func.DwarfInfo != nil {
+			w.aux1(goobj2.AuxDwarfInfo, *s.Func.DwarfInfo)
 		}
-		if s.Func.dwarfLocSym != nil && s.Func.dwarfLocSym.Size != 0 {
-			w.aux1(goobj2.AuxDwarfLoc, s.Func.dwarfLocSym)
+		if s.Func.DwarfLoc != nil {
+			w.aux1(goobj2.AuxDwarfLoc, *s.Func.DwarfLoc)
 		}
-		if s.Func.dwarfRangesSym != nil && s.Func.dwarfRangesSym.Size != 0 {
-			w.aux1(goobj2.AuxDwarfRanges, s.Func.dwarfRangesSym)
+		if s.Func.DwarfRanges != nil {
+			w.aux1(goobj2.AuxDwarfRanges, *s.Func.DwarfRanges)
 		}
-		if s.Func.dwarfDebugLinesSym != nil && s.Func.dwarfDebugLinesSym.Size != 0 {
-			w.aux1(goobj2.AuxDwarfLines, s.Func.dwarfDebugLinesSym)
+		if s.Func.DwarfDebugLines != nil {
+			w.aux1(goobj2.AuxDwarfLines, *s.Func.DwarfDebugLines)
 		}
 	}
 }
 
 // Emits names of referenced indexed symbols, used by tools (objdump, nm)
 // only.
-func (w *writer) refNames() {
+/*func (w *writer) refNames() {
 	seen := make(map[goobj2.SymRef]bool)
 	w.ctxt.traverseSyms(traverseRefs, func(rs *LSym) { // only traverse refs, not auxs, as tools don't need auxs
 		switch rs.PkgIdx {
@@ -315,27 +298,27 @@ func (w *writer) refNames() {
 	// and it just read it into a map in memory upfront. If it uses
 	// mmap, if the output is sorted, it probably could avoid reading
 	// into memory and just do lookups in the mmap'd object file.
-}
+}*/
 
 // return the number of aux symbols s have.
-func nAuxSym(s *LSym) int {
+func nAuxSym(s *Sym) int {
 	n := 0
-	if s.Gotype != nil {
+	if s.Type != nil {
 		n++
 	}
 	if s.Func != nil {
 		// FuncInfo is an aux symbol, each Funcdata is an aux symbol
-		n += 1 + len(s.Func.Pcln.Funcdata)
-		if s.Func.dwarfInfoSym != nil && s.Func.dwarfInfoSym.Size != 0 {
+		n += 1 + len(s.Func.FuncData)
+		if s.Func.DwarfInfo != nil {
 			n++
 		}
-		if s.Func.dwarfLocSym != nil && s.Func.dwarfLocSym.Size != 0 {
+		if s.Func.DwarfLoc != nil {
 			n++
 		}
-		if s.Func.dwarfRangesSym != nil && s.Func.dwarfRangesSym.Size != 0 {
+		if s.Func.DwarfRanges != nil {
 			n++
 		}
-		if s.Func.dwarfDebugLinesSym != nil && s.Func.dwarfDebugLinesSym.Size != 0 {
+		if s.Func.DwarfDebugLines != nil {
 			n++
 		}
 	}
@@ -343,7 +326,7 @@ func nAuxSym(s *LSym) int {
 }
 
 // generate symbols for FuncInfo.
-func genFuncInfoSyms(ctxt *Package) {
+/*func genFuncInfoSyms(ctxt *Package) {
 	infosyms := make([]*Sym, 0, len(ctxt.Text))
 	var pcdataoff uint32
 	var b bytes.Buffer
