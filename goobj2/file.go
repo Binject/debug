@@ -33,7 +33,7 @@ type Package struct {
 	SymDefs       []*Sym
 	NonPkgSymDefs []*Sym
 	NonPkgSymRefs []*Sym
-	SymRefs       []*goobj2.SymRef
+	SymRefs       []SymRef
 	MaxVersion    int64  // maximum Version in any SymID in Syms NOT NEEDED
 	Arch          string // architecture
 }
@@ -51,25 +51,9 @@ type Sym struct {
 	Func  *Func          // additional data for functions
 }
 
-// A SymID - the combination of Name and Version - uniquely identifies
-// a symbol within a package.
-type SymID struct {
-	// Name is the name of a symbol.
+type SymRef struct {
 	Name string
-
-	// Version is zero for symbols with global visibility.
-	// Symbols with only file visibility (such as file-level static
-	// declarations in C) have a non-zero version distinguishing
-	// a symbol in one file from a symbol of the same name
-	// in another file
-	Version int64
-}
-
-func (s SymID) String() string {
-	if s.Version == 0 {
-		return s.Name
-	}
-	return fmt.Sprintf("%s<%d>", s.Name, s.Version)
+	goobj2.SymRef
 }
 
 // A Reloc describes a relocation applied to a memory image to refer
@@ -89,19 +73,6 @@ type Reloc struct {
 	Type objabi.RelocType
 }
 
-// A Var describes a variable in a function stack frame: a declared
-// local variable, an input argument, or an output result.
-type Var struct {
-	// The combination of Name, Kind, and Offset uniquely
-	// identifies a variable in a function stack frame.
-	// Using fewer of these - in particular, using only Name - does not.
-	Name   string // Name of variable.
-	Kind   int64  // TODO(rsc): Define meaning.
-	Offset int64  // Frame offset. TODO(rsc): Define meaning.
-
-	Type SymID // Go type for variable.
-}
-
 // Func contains additional per-symbol information specific to functions.
 type Func struct {
 	Args     int64      // size in bytes of argument frame: inputs and outputs
@@ -110,7 +81,6 @@ type Func struct {
 	Leaf     bool       // function omits save of link register (ARM)
 	NoSplit  bool       // function omits stack split prologue
 	TopFrame bool       // function is the top of the call stack
-	Var      []Var      // detail about local variables
 	PCSP     []byte     // PC → SP offset map
 	PCFile   []byte     // PC → file number map (index into File)
 	PCLine   []byte     // PC → line number map
@@ -666,9 +636,9 @@ func (r *objReader) parseObject(prefix []byte) error {
 	}
 
 	// Symbol references
-	r.p.SymRefs = make([]*goobj2.SymRef, 0, len(refNames))
-	for symRef := range refNames {
-		r.p.SymRefs = append(r.p.SymRefs, &symRef)
+	r.p.SymRefs = make([]SymRef, 0, len(refNames))
+	for symRef, name := range refNames {
+		r.p.SymRefs = append(r.p.SymRefs, SymRef{name, symRef})
 	}
 
 	return nil
