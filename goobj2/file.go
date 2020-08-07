@@ -40,14 +40,15 @@ type Package struct {
 
 // A Sym is a named symbol in an object file.
 type Sym struct {
-	SymID                // symbol identifier (name and version)
+	SymID // symbol identifier (name and version)
+	ABI   uint16
 	Kind  objabi.SymKind // kind of symbol
-	DupOK bool           // are duplicate definitions okay?
-	Size  int64          // size of corresponding data
-	Type  SymID          // symbol for Go type information
-	Data  Data           // memory image of symbol
-	Reloc []Reloc        // relocations to apply to Data
-	Func  *Func          // additional data for functions
+	Flag  uint8
+	Size  int64   // size of corresponding data
+	Type  SymID   // symbol for Go type information
+	Data  []byte  // memory image of symbol
+	Reloc []Reloc // relocations to apply to Data
+	Func  *Func   // additional data for functions
 }
 
 // A SymID - the combination of Name and Version - uniquely identifies
@@ -76,14 +77,6 @@ func (s SymID) String() string {
 		return s.Name
 	}
 	return fmt.Sprintf("%s<%d>", s.Name, s.Version)
-}
-
-// A Data is a reference to data stored in an object file.
-// It records the offset and size of the data, so that a client can
-// read the data only if necessary.
-type Data struct {
-	Offset int64
-	Size   int64
 }
 
 // A Reloc describes a relocation applied to a memory image to refer
@@ -125,11 +118,11 @@ type Func struct {
 	NoSplit  bool       // function omits stack split prologue
 	TopFrame bool       // function is the top of the call stack
 	Var      []Var      // detail about local variables
-	PCSP     Data       // PC → SP offset map
-	PCFile   Data       // PC → file number map (index into File)
-	PCLine   Data       // PC → line number map
-	PCInline Data       // PC → inline tree index map
-	PCData   []Data     // PC → runtime support data map
+	PCSP     []byte     // PC → SP offset map
+	PCFile   []byte     // PC → file number map (index into File)
+	PCLine   []byte     // PC → line number map
+	PCInline []byte     // PC → inline tree index map
+	PCData   [][]byte   // PC → runtime support data map
 	FuncData []FuncData // non-PC-specific runtime support data
 	File     []string   // paths indexed by PCFile
 	InlTree  []InlinedCall
@@ -166,15 +159,14 @@ var (
 
 // An objReader is an object file reader.
 type objReader struct {
-	p          *Package
-	b          *bufio.Reader
-	f          *os.File
-	err        error
-	offset     int64
-	dataOffset int64
-	limit      int64
-	tmp        [256]byte
-	pkgprefix  string
+	p         *Package
+	b         *bufio.Reader
+	f         *os.File
+	err       error
+	offset    int64
+	limit     int64
+	tmp       [256]byte
+	pkgprefix string
 }
 
 // init initializes r to read package p from f.
@@ -283,22 +275,6 @@ func (r *objReader) readInt() int64 {
 	}
 
 	return int64(u>>1) ^ (int64(u) << 63 >> 63)
-}
-
-// readString reads a length-delimited string from the input file.
-func (r *objReader) readString() string {
-	n := r.readInt()
-	buf := make([]byte, n)
-	r.readFull(buf)
-	return string(buf)
-}
-
-// readData reads a data reference from the input file.
-func (r *objReader) readData() Data {
-	n := r.readInt()
-	d := Data{Offset: r.dataOffset, Size: n}
-	r.dataOffset += n
-	return d
 }
 
 // skip skips n bytes in the input.
@@ -477,8 +453,6 @@ func (r *objReader) parseObject(prefix []byte) error {
 		return errNotObject
 	}
 
-	start := uint32(r.offset)
-
 	length := r.limit - r.offset
 	objbytes := make([]byte, length)
 	r.readFull(objbytes)
@@ -546,22 +520,19 @@ func (r *objReader) parseObject(prefix []byte) error {
 	// Read things for the current goobj API for now.
 
 	// Symbols
-	pcdataBase := start + rr.PcdataBase()
+	pcdataBase := rr.PcdataBase()
 	ndef := rr.NSym() + rr.NNonpkgdef()
 
 	// TODO: fix last few entries of NonPkgRefs names
 	parseSym := func(i, j int, symDefs []*Sym) {
 		osym := rr.Sym(i)
-		name := osym.Name(rr)
-		if name == "" {
-			return // not a real symbol
-		}
-		symID := SymID{Name: name, Version: abiToVer(osym.ABI())}
+		symID := SymID{Name: osym.Name(rr), Version: abiToVer(osym.ABI())}
 
 		sym := &Sym{
+			ABI:   osym.ABI(),
 			SymID: symID,
 			Kind:  objabi.SymKind(osym.Type()),
-			DupOK: osym.Dupok(),
+			Flag:  osym.Flag(),
 			Size:  int64(osym.Siz()),
 		}
 		symDefs[j] = sym
@@ -571,9 +542,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 		}
 
 		// Symbol data
-		dataOff := rr.DataOff(i)
-		siz := int64(rr.DataSize(i))
-		sym.Data = Data{int64(start + dataOff), siz}
+		sym.Data = rr.Data(i)
 
 		// Reloc
 		relocs := rr.Relocs(i)
@@ -627,18 +596,18 @@ func (r *objReader) parseObject(prefix []byte) error {
 			NoSplit:  osym.NoSplit(),
 			Leaf:     osym.Leaf(),
 			TopFrame: osym.TopFrame(),
-			PCSP:     Data{int64(pcdataBase + info.Pcsp), int64(info.Pcfile - info.Pcsp)},
-			PCFile:   Data{int64(pcdataBase + info.Pcfile), int64(info.Pcline - info.Pcfile)},
-			PCLine:   Data{int64(pcdataBase + info.Pcline), int64(info.Pcinline - info.Pcline)},
-			PCInline: Data{int64(pcdataBase + info.Pcinline), int64(info.Pcdata[0] - info.Pcinline)},
-			PCData:   make([]Data, len(info.Pcdata)-1), // -1 as we appended one above
+			PCSP:     rr.BytesAt(pcdataBase+info.Pcsp, int(info.Pcfile-info.Pcsp)),
+			PCFile:   rr.BytesAt(pcdataBase+info.Pcfile, int(info.Pcline-info.Pcfile)),
+			PCLine:   rr.BytesAt(pcdataBase+info.Pcline, int(info.Pcinline-info.Pcline)),
+			PCInline: rr.BytesAt(pcdataBase+info.Pcinline, int(info.Pcdata[0]-info.Pcinline)),
+			PCData:   make([][]byte, len(info.Pcdata)-1), // -1 as we appended one above
 			FuncData: make([]FuncData, len(info.Funcdataoff)),
 			File:     make([]string, len(info.File)),
 			InlTree:  make([]InlinedCall, len(info.InlTree)),
 		}
 		sym.Func = f
 		for k := range f.PCData {
-			f.PCData[k] = Data{int64(pcdataBase + info.Pcdata[k]), int64(info.Pcdata[k+1] - info.Pcdata[k])}
+			f.PCData[k] = rr.BytesAt(pcdataBase+info.Pcdata[k], int(info.Pcdata[k+1]-info.Pcdata[k]))
 		}
 		for k := range f.FuncData {
 			symID := resolveSymRef(funcdata[k])
