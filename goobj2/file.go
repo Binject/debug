@@ -636,7 +636,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 	}
 
 	// Non-pkg symbol references
-	nNonPkgRefs := rr.NNonpkgdef()
+	nNonPkgRefs := rr.NNonpkgref()
 	r.p.NonPkgSymRefs = make([]*Sym, nNonPkgRefs)
 	parsedSyms += nNonPkgDefs
 	for i := 0; i < nNonPkgRefs; i++ {

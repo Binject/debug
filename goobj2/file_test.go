@@ -3,15 +3,20 @@ package goobj2
 import (
 	"io/ioutil"
 	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Binject/debug/goobj2/internal/bio"
+	"github.com/kr/pretty"
 )
 
-const (
-	objPath        = "hello_world.o"
-	newObjPath     = "new_" + objPath
-	newPureObjPath = "new_" + objPath + "_pure"
+const objPath = "hello_world.o"
+
+var (
+	newObjPath     = filepath.Join(filepath.Dir(objPath), "new_"+filepath.Base(objPath))
+	newPureObjPath = filepath.Join(filepath.Dir(newObjPath), "pure_"+filepath.Base(newObjPath))
 )
 
 func TestParse(t *testing.T) {
@@ -51,8 +56,12 @@ func TestParse(t *testing.T) {
 	defer f2.Close()
 
 	// test parsing written file
-	_, err = Parse(f2, "")
+	obj2, err := Parse(f2, "")
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(obj, obj2) {
+		t.Fatalf("not equal:\n%v", strings.Join(pretty.Diff(obj, obj2), "\n"))
 	}
 }
