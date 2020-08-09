@@ -7,6 +7,7 @@
 package goobj2
 
 import (
+	"bytes"
 	"path/filepath"
 	"strings"
 
@@ -17,7 +18,6 @@ import (
 
 // Entry point of writing new object file.
 func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
-
 	//genFuncInfoSyms(ctxt)
 
 	w := writer{
@@ -25,6 +25,9 @@ func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
 		ctxt:    ctxt,
 		pkgpath: objabi.PathToPrefix(pkgpath),
 	}
+
+	// Archive/object file header
+	b.Write(ctxt.header)
 
 	start := b.Offset()
 
@@ -136,7 +139,7 @@ func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
 	symDefs := [][]*Sym{ctxt.SymDefs, ctxt.NonPkgSymDefs}
 	for _, list := range symDefs { // iteration order must match genFuncInfoSyms
 		for _, s := range list {
-			if s.Func != nil {
+			if s.Kind == objabi.STEXT && s.Func != nil {
 				w.Bytes(s.Func.PCSP)
 				w.Bytes(s.Func.PCFile)
 				w.Bytes(s.Func.PCLine)
@@ -205,10 +208,10 @@ func (w *writer) StringTable() {
 				continue
 			}
 			for _, f := range s.Func.File {
-				w.AddString(filepath.ToSlash(f))
+				w.AddString(filepath.ToSlash(f.Name))
 			}
 			for _, call := range s.Func.InlTree {
-				w.AddString(filepath.ToSlash(call.File))
+				w.AddString(filepath.ToSlash(call.File.Name))
 			}
 		}
 	}
@@ -306,81 +309,76 @@ func nAuxSym(s *Sym) int {
 }
 
 // generate symbols for FuncInfo.
-/*func genFuncInfoSyms(ctxt *Package) {
-	infosyms := make([]*Sym, 0, len(ctxt.Text))
+func genFuncInfoSyms(ctxt *Package) {
+	var infosyms []*Sym
 	var pcdataoff uint32
 	var b bytes.Buffer
 	symidx := int32(len(ctxt.SymDefs))
-	for _, s := range ctxt.Text {
-		if s.Func == nil {
-			continue
-		}
-		o := goobj2.FuncInfo{
-			Args:   uint32(s.Func.Args),
-			Locals: uint32(s.Func.Locals),
-		}
-		pc := &s.Func.Pcln
-		o.Pcsp = pcdataoff
-		pcdataoff += uint32(len(pc.Pcsp.P))
-		o.Pcfile = pcdataoff
-		pcdataoff += uint32(len(pc.Pcfile.P))
-		o.Pcline = pcdataoff
-		pcdataoff += uint32(len(pc.Pcline.P))
-		o.Pcinline = pcdataoff
-		pcdataoff += uint32(len(pc.Pcinline.P))
-		o.Pcdata = make([]uint32, len(pc.Pcdata))
-		for i, pcd := range pc.Pcdata {
-			o.Pcdata[i] = pcdataoff
-			pcdataoff += uint32(len(pcd.P))
-		}
-		o.PcdataEnd = pcdataoff
-		o.Funcdataoff = make([]uint32, len(pc.Funcdataoff))
-		for i, x := range pc.Funcdataoff {
-			o.Funcdataoff[i] = uint32(x)
-		}
-		o.File = make([]goobj2.SymRef, len(pc.File))
-		for i, f := range pc.File {
-			fsym := ctxt.Lookup(f)
-			o.File[i] = makeSymRef(fsym)
-		}
-		o.InlTree = make([]goobj2.InlTreeNode, len(pc.InlTree.nodes))
-		for i, inl := range pc.InlTree.nodes {
-			f, l := linkgetlineFromPos(ctxt, inl.Pos)
-			fsym := ctxt.Lookup(f)
-			o.InlTree[i] = goobj2.InlTreeNode{
-				Parent:   int32(inl.Parent),
-				File:     makeSymRef(fsym),
-				Line:     l,
-				Func:     makeSymRef(inl.Func),
-				ParentPC: inl.ParentPC,
-			}
-		}
-
-		o.Write(&b)
-		isym := &LSym{
-			Type:   objabi.SDATA, // for now, I don't think it matters
-			PkgIdx: goobj2.PkgIdxSelf,
-			SymIdx: symidx,
-			P:      append([]byte(nil), b.Bytes()...),
-		}
-		isym.Set(AttrIndexed, true)
-		symidx++
-		infosyms = append(infosyms, isym)
-		s.Func.FuncInfoSym = isym
-		b.Reset()
-
-		dwsyms := []*LSym{s.Func.dwarfRangesSym, s.Func.dwarfLocSym, s.Func.dwarfDebugLinesSym, s.Func.dwarfInfoSym}
-		for _, s := range dwsyms {
-			if s == nil || s.Size == 0 {
+	syms := [][]*Sym{ctxt.SymDefs, ctxt.NonPkgSymDefs}
+	for _, list := range syms {
+		for _, s := range list {
+			if s.Kind == objabi.STEXT || s.Func == nil {
 				continue
 			}
-			s.PkgIdx = goobj2.PkgIdxSelf
-			s.SymIdx = symidx
-			s.Set(AttrIndexed, true)
+			o := goobj2.FuncInfo{
+				Args:   uint32(s.Func.Args),
+				Locals: uint32(s.Func.Frame),
+			}
+			o.Pcsp = pcdataoff
+			pcdataoff += uint32(len(s.Func.PCSP))
+			o.Pcfile = pcdataoff
+			pcdataoff += uint32(len(s.Func.PCFile))
+			o.Pcline = pcdataoff
+			pcdataoff += uint32(len(s.Func.PCLine))
+			o.Pcinline = pcdataoff
+			pcdataoff += uint32(len(s.Func.PCInline))
+			o.Pcdata = make([]uint32, len(s.Func.FuncData))
+			for i, pcd := range s.Func.PCData {
+				o.Pcdata[i] = pcdataoff
+				pcdataoff += uint32(len(pcd))
+			}
+			o.PcdataEnd = pcdataoff
+			o.Funcdataoff = make([]uint32, len(s.Func.FuncData))
+			for i, x := range s.Func.FuncData {
+				o.Funcdataoff[i] = uint32(x.Offset)
+			}
+			o.File = make([]goobj2.SymRef, len(s.Func.File))
+			for i, f := range s.Func.File {
+				o.File[i] = f.SymRef
+			}
+			o.InlTree = make([]goobj2.InlTreeNode, len(s.Func.InlTree))
+			for i, inl := range s.Func.InlTree {
+				o.InlTree[i] = goobj2.InlTreeNode{
+					Parent:   int32(inl.Parent),
+					File:     inl.File.SymRef,
+					Line:     inl.Line,
+					Func:     inl.Func,
+					ParentPC: inl.ParentPC,
+				}
+			}
+
+			o.Write(&b)
+			isym := &Sym{
+				Kind: objabi.SDATA, // for now, I don't think it matters
+				Data: b.Bytes(),
+			}
 			symidx++
-			infosyms = append(infosyms, s)
+			infosyms = append(infosyms, isym)
+			//s.Func.FuncInfo = &goobj2.SymRef{goobj2.PkgIdxSelf, uint32(symidx)}
+			b.Reset()
+
+			/*dwsyms := []*SymRef{s.Func.dwarfRangesSym, s.Func.dwarfLocSym, s.Func.dwarfDebugLinesSym, s.Func.dwarfInfoSym}
+			for _, s := range dwsyms {
+				if s == nil || s.Size == 0 {
+					continue
+				}
+				//s.PkgIdx = goobj2.PkgIdxSelf
+				//s.SymIdx = symidx
+				symidx++
+				infosyms = append(infosyms, s)
+			}*/
 		}
 	}
-	ctxt.defs = append(ctxt.defs, infosyms...)
+
+	ctxt.SymDefs = append(ctxt.SymDefs, infosyms...)
 }
-*/

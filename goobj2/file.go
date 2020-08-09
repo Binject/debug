@@ -25,6 +25,7 @@ import (
 
 // A Package is a parsed Go object file or archive defining a Go package.
 type Package struct {
+	header        []byte
 	Header        goobj2.Header
 	ImportPath    string               // import path denoting this package
 	Imports       []goobj2.ImportedPkg // packages imported by this package
@@ -87,7 +88,7 @@ type Func struct {
 	PCInline []byte     // PC → inline tree index map
 	PCData   [][]byte   // PC → runtime support data map
 	FuncData []FuncData // non-PC-specific runtime support data
-	File     []string   // paths indexed by PCFile
+	File     []SymRef   // paths indexed by PCFile
 	InlTree  []InlinedCall
 
 	FuncInfo        *goobj2.SymRef
@@ -109,10 +110,10 @@ type FuncData struct {
 // See cmd/internal/obj.InlTree for details.
 type InlinedCall struct {
 	Parent   int64
-	File     string
-	Line     int64
-	Func     *goobj2.SymRef
-	ParentPC int64
+	File     SymRef
+	Line     int32
+	Func     goobj2.SymRef
+	ParentPC int32
 }
 
 var (
@@ -136,6 +137,7 @@ type objReader struct {
 	limit     int64
 	tmp       [256]byte
 	pkgprefix string
+	objStart  int64
 }
 
 // init initializes r to read package p from f.
@@ -380,6 +382,11 @@ func (r *objReader) parseArchive() error {
 			r.skip(1)
 		}
 	}
+
+	// Object header
+	r.p.header = make([]byte, r.objStart)
+	r.f.ReadAt(r.p.header, 0)
+
 	return nil
 }
 
@@ -422,6 +429,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 		return errNotObject
 	}
 
+	r.objStart = r.offset
 	length := r.limit - r.offset
 	objbytes := make([]byte, length)
 	r.readFull(objbytes)
@@ -574,7 +582,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 			PCInline: rr.BytesAt(pcdataBase+info.Pcinline, int(info.Pcdata[0]-info.Pcinline)),
 			PCData:   make([][]byte, len(info.Pcdata)-1), // -1 as we appended one above
 			FuncData: make([]FuncData, len(info.Funcdataoff)),
-			File:     make([]string, len(info.File)),
+			File:     make([]SymRef, len(info.File)),
 			InlTree:  make([]InlinedCall, len(info.InlTree)),
 			FuncInfo: funcInfo,
 		}
@@ -586,16 +594,16 @@ func (r *objReader) parseObject(prefix []byte) error {
 			f.FuncData[k] = FuncData{funcdata[k], int64(info.Funcdataoff[k])}
 		}
 		for k := range f.File {
-			f.File[k] = resolveSymRefName(info.File[k])
+			f.File[k] = SymRef{resolveSymRefName(info.File[k]), info.File[k]}
 		}
 		for k := range f.InlTree {
 			inl := &info.InlTree[k]
 			f.InlTree[k] = InlinedCall{
 				Parent:   int64(inl.Parent),
-				File:     resolveSymRefName(inl.File),
-				Line:     int64(inl.Line),
-				Func:     &inl.Func,
-				ParentPC: int64(inl.ParentPC),
+				File:     SymRef{resolveSymRefName(inl.File), inl.File},
+				Line:     inl.Line,
+				Func:     inl.Func,
+				ParentPC: inl.ParentPC,
 			}
 		}
 		if dinfo != nil {
