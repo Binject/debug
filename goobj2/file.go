@@ -3,9 +3,8 @@
 // license that can be found in the LICENSE file.
 
 // Package goobj implements reading of Go object files and archives.
-//
-// TODO(rsc): Decide where this package should live. (golang.org/issue/6932)
-// TODO(rsc): Decide the appropriate integer types for various fields.
+
+// This file is a modified version of src/cmd/internal/goobj/readnew.go
 
 package goobj2
 

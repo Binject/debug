@@ -4,6 +4,8 @@
 
 // Writing Go object files.
 
+// This file is a modified version of src/cmd/internal/obj/objfile2.go
+
 package goobj2
 
 import (
