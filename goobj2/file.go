@@ -44,11 +44,11 @@ type Sym struct {
 	ABI   uint16
 	Kind  objabi.SymKind // kind of symbol
 	Flag  uint8
-	Size  int64          // size of corresponding data
-	Type  *goobj2.SymRef // symbol for Go type information
-	Data  []byte         // memory image of symbol
-	Reloc []Reloc        // relocations to apply to Data
-	Func  *Func          // additional data for functions
+	Size  int64   // size of corresponding data
+	Type  *SymRef // symbol for Go type information
+	Data  []byte  // memory image of symbol
+	Reloc []Reloc // relocations to apply to Data
+	Func  *Func   // additional data for functions
 }
 
 type SymRef struct {
@@ -59,6 +59,7 @@ type SymRef struct {
 // A Reloc describes a relocation applied to a memory image to refer
 // to an address within a particular symbol.
 type Reloc struct {
+	Name string
 	// The bytes at [Offset, Offset+Size) within the containing Sym
 	// should be updated to refer to the address Add bytes after the start
 	// of the symbol Sym.
@@ -90,19 +91,19 @@ type Func struct {
 	File     []SymRef   // paths indexed by PCFile
 	InlTree  []InlinedCall
 
-	FuncInfo        *goobj2.SymRef
-	DwarfInfo       *goobj2.SymRef
-	DwarfLoc        *goobj2.SymRef
-	DwarfRanges     *goobj2.SymRef
-	DwarfDebugLines *goobj2.SymRef
+	FuncInfo        *SymRef
+	DwarfInfo       *SymRef
+	DwarfLoc        *SymRef
+	DwarfRanges     *SymRef
+	DwarfDebugLines *SymRef
 }
 
 // TODO: Add PCData []byte and PCDataIter (similar to liblink).
 
 // A FuncData is a single function-specific data value.
 type FuncData struct {
-	Sym    *goobj2.SymRef // symbol holding data
-	Offset int64          // offset into symbol for funcdata pointer
+	Sym    *SymRef // symbol holding data
+	Offset int64   // offset into symbol for funcdata pointer
 }
 
 // An InlinedCall is a node in an InlTree.
@@ -111,7 +112,7 @@ type InlinedCall struct {
 	Parent   int64
 	File     SymRef
 	Line     int32
-	Func     goobj2.SymRef
+	Func     SymRef
 	ParentPC int32
 }
 
@@ -491,6 +492,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 	// TODO: fix last few entries of NonPkgRefs names
 	parseSym := func(i, j int, symDefs []*Sym) {
 		osym := rr.Sym(i)
+		osym.IsGoType()
 
 		sym := &Sym{
 			Name: osym.Name(rr),
@@ -513,48 +515,50 @@ func (r *objReader) parseObject(prefix []byte) error {
 		sym.Reloc = make([]Reloc, len(relocs))
 		for j := range relocs {
 			rel := &relocs[j]
+			s := rel.Sym()
 			sym.Reloc[j] = Reloc{
+				Name:   resolveSymRefName(s),
 				Offset: int64(rel.Off()),
 				Size:   int64(rel.Siz()),
 				Type:   objabi.RelocType(rel.Type()),
 				Add:    rel.Add(),
-				Sym:    rel.Sym(),
+				Sym:    s,
 			}
 		}
 
 		// Aux symbol info
 		isym := -1
-		funcdata := make([]*goobj2.SymRef, 0, 4)
-		var funcInfo, dinfo, dloc, dranges, dlines *goobj2.SymRef
+		funcdata := make([]*SymRef, 0, 4)
+		var funcInfo, dinfo, dloc, dranges, dlines *SymRef
 		auxs := rr.Auxs(i)
 		for j := range auxs {
 			a := &auxs[j]
 			switch a.Type() {
 			case goobj2.AuxGotype:
 				s := a.Sym()
-				sym.Type = &s
+				sym.Type = &SymRef{resolveSymRefName(s), s}
 			case goobj2.AuxFuncInfo:
 				sr := a.Sym()
 				if sr.PkgIdx != goobj2.PkgIdxSelf {
 					panic("funcinfo symbol not defined in current package")
 				}
-				funcInfo = &sr
+				funcInfo = &SymRef{resolveSymRefName(sr), sr}
 				isym = int(a.Sym().SymIdx)
 			case goobj2.AuxFuncdata:
 				sr := a.Sym()
-				funcdata = append(funcdata, &sr)
+				funcdata = append(funcdata, &SymRef{resolveSymRefName(sr), sr})
 			case goobj2.AuxDwarfInfo:
 				sr := a.Sym()
-				dinfo = &sr
+				dinfo = &SymRef{resolveSymRefName(sr), sr}
 			case goobj2.AuxDwarfLoc:
 				sr := a.Sym()
-				dloc = &sr
+				dloc = &SymRef{resolveSymRefName(sr), sr}
 			case goobj2.AuxDwarfRanges:
 				sr := a.Sym()
-				dranges = &sr
+				dranges = &SymRef{resolveSymRefName(sr), sr}
 			case goobj2.AuxDwarfLines:
 				sr := a.Sym()
-				dlines = &sr
+				dlines = &SymRef{resolveSymRefName(sr), sr}
 			default:
 				panic("unknown aux type")
 			}
@@ -601,7 +605,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 				Parent:   int64(inl.Parent),
 				File:     SymRef{resolveSymRefName(inl.File), inl.File},
 				Line:     inl.Line,
-				Func:     inl.Func,
+				Func:     SymRef{resolveSymRefName(inl.Func), inl.Func},
 				ParentPC: inl.ParentPC,
 			}
 		}

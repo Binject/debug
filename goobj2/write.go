@@ -193,6 +193,28 @@ func (w *writer) StringTable() {
 	for _, list := range syms {
 		for _, s := range list {
 			w.AddString(s.Name)
+
+			for _, r := range s.Reloc {
+				w.AddString(r.Name)
+			}
+			if s.Type != nil {
+				w.AddString(s.Name)
+			}
+
+			if s.Kind == objabi.STEXT && s.Func != nil {
+				for _, d := range s.Func.FuncData {
+					w.AddString(d.Sym.Name)
+				}
+				for _, call := range s.Func.InlTree {
+					w.AddString(call.Func.Name)
+				}
+				dwsyms := []*SymRef{s.Func.DwarfRanges, s.Func.DwarfLoc, s.Func.DwarfDebugLines, s.Func.FuncInfo}
+				for _, dws := range dwsyms {
+					if dws != nil {
+						w.AddString(dws.Name)
+					}
+				}
+			}
 		}
 	}
 	for _, r := range w.ctxt.SymRefs {
@@ -261,26 +283,26 @@ func (w *writer) aux1(typ uint8, rs goobj2.SymRef) {
 
 func (w *writer) Aux(s *Sym) {
 	if s.Type != nil {
-		w.aux1(goobj2.AuxGotype, *s.Type)
+		w.aux1(goobj2.AuxGotype, s.Type.SymRef)
 	}
 	if s.Func != nil {
-		w.aux1(goobj2.AuxFuncInfo, *s.Func.FuncInfo)
+		w.aux1(goobj2.AuxFuncInfo, s.Func.FuncInfo.SymRef)
 
 		for _, d := range s.Func.FuncData {
-			w.aux1(goobj2.AuxFuncdata, *d.Sym)
+			w.aux1(goobj2.AuxFuncdata, d.Sym.SymRef)
 		}
 
 		if s.Func.DwarfInfo != nil {
-			w.aux1(goobj2.AuxDwarfInfo, *s.Func.DwarfInfo)
+			w.aux1(goobj2.AuxDwarfInfo, s.Func.DwarfInfo.SymRef)
 		}
 		if s.Func.DwarfLoc != nil {
-			w.aux1(goobj2.AuxDwarfLoc, *s.Func.DwarfLoc)
+			w.aux1(goobj2.AuxDwarfLoc, s.Func.DwarfLoc.SymRef)
 		}
 		if s.Func.DwarfRanges != nil {
-			w.aux1(goobj2.AuxDwarfRanges, *s.Func.DwarfRanges)
+			w.aux1(goobj2.AuxDwarfRanges, s.Func.DwarfRanges.SymRef)
 		}
 		if s.Func.DwarfDebugLines != nil {
-			w.aux1(goobj2.AuxDwarfLines, *s.Func.DwarfDebugLines)
+			w.aux1(goobj2.AuxDwarfLines, s.Func.DwarfDebugLines.SymRef)
 		}
 	}
 }
@@ -354,7 +376,7 @@ func genFuncInfoSyms(ctxt *Package) {
 					Parent:   int32(inl.Parent),
 					File:     inl.File.SymRef,
 					Line:     inl.Line,
-					Func:     inl.Func,
+					Func:     inl.Func.SymRef,
 					ParentPC: inl.ParentPC,
 				}
 			}
