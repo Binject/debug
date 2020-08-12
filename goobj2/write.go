@@ -189,37 +189,60 @@ func (w *writer) StringTable() {
 		w.AddString(pkg)
 	}
 
-	syms := [][]*Sym{w.ctxt.SymDefs, w.ctxt.NonPkgSymDefs, w.ctxt.NonPkgSymRefs}
+	writeSymStrings := func(s *Sym) {
+		w.AddString(s.Name)
+
+		for _, r := range s.Reloc {
+			w.AddString(r.Name)
+		}
+		if s.Type != nil {
+			w.AddString(s.Name)
+		}
+
+		if s.Kind == objabi.STEXT && s.Func != nil {
+			for _, d := range s.Func.FuncData {
+				w.AddString(d.Sym.Name)
+			}
+			for _, f := range s.Func.File {
+				w.AddString(filepath.ToSlash(f.Name))
+			}
+			for _, call := range s.Func.InlTree {
+				w.AddString(call.File.Name)
+				w.AddString(call.Func.Name)
+			}
+
+			dwsyms := []*SymRef{s.Func.DwarfRanges, s.Func.DwarfLoc, s.Func.DwarfDebugLines, s.Func.FuncInfo}
+			for _, dws := range dwsyms {
+				if dws != nil {
+					w.AddString(dws.Name)
+				}
+			}
+		}
+	}
+
+	// Symbols of type STEXT (that have functions) are written first
+	for _, ts := range w.ctxt.textSyms {
+		writeSymStrings(ts.sym)
+	}
+
+	var initFuncSym *Sym
+	for _, s := range w.ctxt.SymDefs {
+		if s.Name == `""..inittask` {
+			initFuncSym = s
+			break
+		}
+	}
+
+	// TODO: optimize by not writing symbols twice
+	syms := [][]*Sym{w.ctxt.NonPkgSymDefs, w.ctxt.SymDefs, w.ctxt.NonPkgSymRefs}
 	for _, list := range syms {
 		for _, s := range list {
-			w.AddString(s.Name)
-
-			for _, r := range s.Reloc {
-				w.AddString(r.Name)
-			}
-			if s.Type != nil {
-				w.AddString(s.Name)
+			// in my testing, the symbol for the 'init' function goes before 'go.itab' symbols
+			if strings.HasPrefix(s.Name, "go.itab.") {
+				writeSymStrings(initFuncSym)
 			}
 
-			if s.Kind == objabi.STEXT && s.Func != nil {
-				for _, f := range s.Func.File {
-					w.AddString(filepath.ToSlash(f.Name))
-				}
-				for _, d := range s.Func.FuncData {
-					w.AddString(d.Sym.Name)
-				}
-				for _, call := range s.Func.InlTree {
-					w.AddString(call.File.Name)
-					w.AddString(call.Func.Name)
-				}
-
-				dwsyms := []*SymRef{s.Func.DwarfRanges, s.Func.DwarfLoc, s.Func.DwarfDebugLines, s.Func.FuncInfo}
-				for _, dws := range dwsyms {
-					if dws != nil {
-						w.AddString(dws.Name)
-					}
-				}
-			}
+			writeSymStrings(s)
 		}
 	}
 	for _, r := range w.ctxt.SymRefs {

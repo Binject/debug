@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -41,6 +42,32 @@ type Package struct {
 	SymRefs       []SymRef
 	MaxVersion    int64  // maximum Version in any SymID in Syms NOT NEEDED
 	Arch          string // architecture
+
+	textSyms textSyms
+}
+
+type textSyms []textSym
+
+func (t textSyms) Len() int {
+	return len(t)
+}
+
+func (t textSyms) Less(i, j int) bool {
+	return t[i].nonPkg && !t[j].nonPkg
+}
+
+func (t textSyms) Swap(i, j int) {
+	var temp textSym
+
+	temp = t[i]
+	t[i] = t[j]
+	t[j] = temp
+
+}
+
+type textSym struct {
+	nonPkg bool
+	sym    *Sym
 }
 
 // A Sym is a named symbol in an object file.
@@ -490,6 +517,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 	// Symbols
 	pcdataBase := rr.PcdataBase()
 	ndef := rr.NSym() + rr.NNonpkgdef()
+	npkgDef := ndef - rr.NNonpkgdef()
 	var inlFuncsToResolve []*InlinedCall
 
 	parseSym := func(i, j int, symDefs []*Sym) {
@@ -507,6 +535,13 @@ func (r *objReader) parseObject(prefix []byte) error {
 
 		if i >= ndef {
 			return // not a defined symbol from here
+		}
+
+		if sym.Kind == objabi.STEXT {
+			r.p.textSyms = append(r.p.textSyms, textSym{
+				nonPkg: i >= npkgDef,
+				sym:    sym,
+			})
 		}
 
 		// Symbol data
@@ -666,6 +701,9 @@ func (r *objReader) parseObject(prefix []byte) error {
 	for symRef, name := range refNames {
 		r.p.SymRefs = append(r.p.SymRefs, SymRef{name, symRef})
 	}
+
+	// Sort text symbols
+	sort.Sort(r.p.textSyms)
 
 	return nil
 }
