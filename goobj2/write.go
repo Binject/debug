@@ -138,18 +138,13 @@ func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
 
 	// Pcdata
 	ctxt.Header.Offsets[goobj2.BlkPcdata] = w.Offset()
-	symDefs := [][]*Sym{ctxt.SymDefs, ctxt.NonPkgSymDefs}
-	for _, list := range symDefs { // iteration order must match genFuncInfoSyms
-		for _, s := range list {
-			if s.Kind == objabi.STEXT && s.Func != nil {
-				w.Bytes(s.Func.PCSP)
-				w.Bytes(s.Func.PCFile)
-				w.Bytes(s.Func.PCLine)
-				w.Bytes(s.Func.PCInline)
-				for i := range s.Func.PCData {
-					w.Bytes(s.Func.PCData[i])
-				}
-			}
+	for _, ts := range ctxt.textSyms {
+		w.Bytes(ts.sym.Func.PCSP)
+		w.Bytes(ts.sym.Func.PCFile)
+		w.Bytes(ts.sym.Func.PCLine)
+		w.Bytes(ts.sym.Func.PCInline)
+		for i := range ts.sym.Func.PCData {
+			w.Bytes(ts.sym.Func.PCData[i])
 		}
 	}
 
