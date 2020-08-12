@@ -487,9 +487,12 @@ func (r *objReader) parseObject(prefix []byte) error {
 	// Name of referenced indexed symbols.
 	nrefName := rr.NRefName()
 	refNames := make(map[goobj2.SymRef]string, nrefName)
+	r.p.SymRefs = make([]SymRef, 0, nrefName)
 	for i := 0; i < nrefName; i++ {
 		rn := rr.RefName(i)
-		refNames[rn.Sym()] = rn.Name(rr)
+		sym, name := rn.Sym(), rn.Name(rr)
+		refNames[sym] = name
+		r.p.SymRefs = append(r.p.SymRefs, SymRef{name, sym})
 	}
 
 	resolveSymRefName := func(s goobj2.SymRef) string {
@@ -696,11 +699,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 		parseSym(i+parsedSyms, i, r.p.NonPkgSymRefs)
 	}
 
-	// Symbol references
-	r.p.SymRefs = make([]SymRef, 0, len(refNames))
-	for symRef, name := range refNames {
-		r.p.SymRefs = append(r.p.SymRefs, SymRef{name, symRef})
-	}
+	// Symbol references were already parsed above
 
 	// Sort text symbols
 	sort.Sort(r.p.textSyms)
