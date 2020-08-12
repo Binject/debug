@@ -4,7 +4,7 @@
 
 // Package goobj implements reading of Go object files and archives.
 
-// This file is a modified version of src/cmd/internal/goobj/readnew.go
+// This file is a modified version of cmd/internal/goobj/readnew.go
 
 package goobj2
 
@@ -20,6 +20,11 @@ import (
 
 	"github.com/Binject/debug/goobj2/internal/goobj2"
 	"github.com/Binject/debug/goobj2/internal/objabi"
+)
+
+const (
+	inlFuncSymSuffix = "$abstract"
+	goInfoPrefixLen  = 8 // length of "go.info."
 )
 
 // A Package is a parsed Go object file or archive defining a Go package.
@@ -44,7 +49,8 @@ type Sym struct {
 	ABI   uint16
 	Kind  objabi.SymKind // kind of symbol
 	Flag  uint8
-	Size  int64   // size of corresponding data
+	Size  uint32 // size of corresponding data
+	Align uint32
 	Type  *SymRef // symbol for Go type information
 	Data  []byte  // memory image of symbol
 	Reloc []Reloc // relocations to apply to Data
@@ -78,10 +84,6 @@ type Reloc struct {
 type Func struct {
 	Args     int64      // size in bytes of argument frame: inputs and outputs
 	Frame    int64      // size in bytes of local variable frame
-	Align    uint32     // alignment requirement in bytes for the address of the function
-	Leaf     bool       // function omits save of link register (ARM)
-	NoSplit  bool       // function omits stack split prologue
-	TopFrame bool       // function is the top of the call stack
 	PCSP     []byte     // PC → SP offset map
 	PCFile   []byte     // PC → file number map (index into File)
 	PCLine   []byte     // PC → line number map
@@ -89,7 +91,7 @@ type Func struct {
 	PCData   [][]byte   // PC → runtime support data map
 	FuncData []FuncData // non-PC-specific runtime support data
 	File     []SymRef   // paths indexed by PCFile
-	InlTree  []InlinedCall
+	InlTree  []*InlinedCall
 
 	FuncInfo        *SymRef
 	DwarfInfo       *SymRef
@@ -488,18 +490,18 @@ func (r *objReader) parseObject(prefix []byte) error {
 	// Symbols
 	pcdataBase := rr.PcdataBase()
 	ndef := rr.NSym() + rr.NNonpkgdef()
+	var inlFuncsToResolve []*InlinedCall
 
-	// TODO: fix last few entries of NonPkgRefs names
 	parseSym := func(i, j int, symDefs []*Sym) {
 		osym := rr.Sym(i)
-		osym.IsGoType()
 
 		sym := &Sym{
-			Name: osym.Name(rr),
-			ABI:  osym.ABI(),
-			Kind: objabi.SymKind(osym.Type()),
-			Flag: osym.Flag(),
-			Size: int64(osym.Siz()),
+			Name:  osym.Name(rr),
+			ABI:   osym.ABI(),
+			Kind:  objabi.SymKind(osym.Type()),
+			Flag:  osym.Flag(),
+			Size:  osym.Siz(),
+			Align: osym.Align(),
 		}
 		symDefs[j] = sym
 
@@ -568,7 +570,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 		if isym == -1 {
 			return
 		}
-		b := rr.BytesAt(rr.DataOff(isym), rr.DataSize(isym))
+		b := rr.Data(isym)
 		info := goobj2.FuncInfo{}
 		info.Read(b)
 
@@ -576,9 +578,6 @@ func (r *objReader) parseObject(prefix []byte) error {
 		f := &Func{
 			Args:     int64(info.Args),
 			Frame:    int64(info.Locals),
-			NoSplit:  osym.NoSplit(),
-			Leaf:     osym.Leaf(),
-			TopFrame: osym.TopFrame(),
 			PCSP:     rr.BytesAt(pcdataBase+info.Pcsp, int(info.Pcfile-info.Pcsp)),
 			PCFile:   rr.BytesAt(pcdataBase+info.Pcfile, int(info.Pcline-info.Pcfile)),
 			PCLine:   rr.BytesAt(pcdataBase+info.Pcline, int(info.Pcinline-info.Pcline)),
@@ -586,7 +585,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 			PCData:   make([][]byte, len(info.Pcdata)-1), // -1 as we appended one above
 			FuncData: make([]FuncData, len(info.Funcdataoff)),
 			File:     make([]SymRef, len(info.File)),
-			InlTree:  make([]InlinedCall, len(info.InlTree)),
+			InlTree:  make([]*InlinedCall, len(info.InlTree)),
 			FuncInfo: funcInfo,
 		}
 		sym.Func = f
@@ -601,12 +600,16 @@ func (r *objReader) parseObject(prefix []byte) error {
 		}
 		for k := range f.InlTree {
 			inl := &info.InlTree[k]
-			f.InlTree[k] = InlinedCall{
+			f.InlTree[k] = &InlinedCall{
 				Parent:   int64(inl.Parent),
 				File:     SymRef{resolveSymRefName(inl.File), inl.File},
 				Line:     inl.Line,
 				Func:     SymRef{resolveSymRefName(inl.Func), inl.Func},
 				ParentPC: inl.ParentPC,
+			}
+
+			if f.InlTree[k].Func.Name == "" {
+				inlFuncsToResolve = append(inlFuncsToResolve, f.InlTree[k])
 			}
 		}
 		if dinfo != nil {
@@ -636,6 +639,18 @@ func (r *objReader) parseObject(prefix []byte) error {
 	parsedSyms := nsymDefs
 	for i := 0; i < nNonPkgDefs; i++ {
 		parseSym(i+parsedSyms, i, r.p.NonPkgSymDefs)
+	}
+
+	// Resolve missing inlined function names
+	var lastFoundSym int
+	for _, inl := range inlFuncsToResolve {
+		for i, sym := range r.p.NonPkgSymDefs[lastFoundSym:] {
+			if strings.HasSuffix(sym.Name, inlFuncSymSuffix) {
+				inl.Func.Name = sym.Name[goInfoPrefixLen : len(sym.Name)-len(inlFuncSymSuffix)]
+				lastFoundSym = i + 1
+				break
+			}
+		}
 	}
 
 	// Non-pkg symbol references

@@ -4,7 +4,7 @@
 
 // Writing Go object files.
 
-// This file is a modified version of src/cmd/internal/obj/objfile2.go
+// This file is a modified version of cmd/internal/obj/objfile2.go
 
 package goobj2
 
@@ -156,6 +156,7 @@ func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
 	// Blocks used only by tools (objdump, nm).
 
 	// Referenced symbol names from other packages
+	// TODO: will be different due to strings in different order
 	ctxt.Header.Offsets[goobj2.BlkRefName] = w.Offset()
 	for _, ref := range ctxt.SymRefs {
 		var o goobj2.RefName
@@ -176,8 +177,7 @@ func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
 type writer struct {
 	*goobj2.Writer
 	ctxt    *Package
-	pkgpath string   // the package import path (escaped), "" if unknown
-	pkglist []string // list of packages referenced, indexed by ctxt.pkgIdx
+	pkgpath string // the package import path (escaped), "" if unknown
 }
 
 func (w *writer) StringTable() {
@@ -202,12 +202,17 @@ func (w *writer) StringTable() {
 			}
 
 			if s.Kind == objabi.STEXT && s.Func != nil {
+				for _, f := range s.Func.File {
+					w.AddString(filepath.ToSlash(f.Name))
+				}
 				for _, d := range s.Func.FuncData {
 					w.AddString(d.Sym.Name)
 				}
 				for _, call := range s.Func.InlTree {
+					w.AddString(call.File.Name)
 					w.AddString(call.Func.Name)
 				}
+
 				dwsyms := []*SymRef{s.Func.DwarfRanges, s.Func.DwarfLoc, s.Func.DwarfDebugLines, s.Func.FuncInfo}
 				for _, dws := range dwsyms {
 					if dws != nil {
@@ -221,25 +226,6 @@ func (w *writer) StringTable() {
 		w.AddString(r.Name)
 	}
 
-	for i, list := range syms {
-		// skip non-pkg symbol references
-		if i == 2 {
-			break
-		}
-
-		for _, s := range list {
-			if s.Kind != objabi.STEXT {
-				continue
-			}
-			for _, f := range s.Func.File {
-				w.AddString(filepath.ToSlash(f.Name))
-			}
-			for _, call := range s.Func.InlTree {
-				w.AddString(filepath.ToSlash(call.File.Name))
-			}
-		}
-	}
-
 	for _, f := range w.ctxt.DWARFFileList {
 		w.AddString(filepath.ToSlash(f))
 	}
@@ -250,17 +236,14 @@ func (w *writer) Sym(s *Sym) {
 	if strings.HasPrefix(name, "gofile..") {
 		name = filepath.ToSlash(name)
 	}
-	var align uint32
-	if s.Func != nil {
-		align = uint32(s.Func.Align)
-	}
+
 	var o goobj2.Sym
 	o.SetName(name, w.Writer)
 	o.SetABI(s.ABI)
 	o.SetType(uint8(s.Kind))
 	o.SetFlag(s.Flag)
-	o.SetSiz(uint32(s.Size))
-	o.SetAlign(align)
+	o.SetSiz(s.Size)
+	o.SetAlign(s.Align)
 	o.Write(w.Writer)
 }
 
@@ -334,14 +317,12 @@ func nAuxSym(s *Sym) int {
 
 // generate symbols for FuncInfo.
 func genFuncInfoSyms(ctxt *Package) {
-	var infosyms []*Sym
 	var pcdataoff uint32
 	var b bytes.Buffer
-	symidx := int32(len(ctxt.SymDefs))
 	syms := [][]*Sym{ctxt.SymDefs, ctxt.NonPkgSymDefs}
 	for _, list := range syms {
 		for _, s := range list {
-			if s.Kind == objabi.STEXT || s.Func == nil {
+			if s.Kind != objabi.STEXT || s.Func == nil {
 				continue
 			}
 			o := goobj2.FuncInfo{
@@ -382,27 +363,8 @@ func genFuncInfoSyms(ctxt *Package) {
 			}
 
 			o.Write(&b)
-			isym := &Sym{
-				Kind: objabi.SDATA, // for now, I don't think it matters
-				Data: b.Bytes(),
-			}
-			symidx++
-			infosyms = append(infosyms, isym)
-			//s.Func.FuncInfo = &goobj2.SymRef{goobj2.PkgIdxSelf, uint32(symidx)}
+			s.Data = b.Bytes()
 			b.Reset()
-
-			/*dwsyms := []*SymRef{s.Func.dwarfRangesSym, s.Func.dwarfLocSym, s.Func.dwarfDebugLinesSym, s.Func.dwarfInfoSym}
-			for _, s := range dwsyms {
-				if s == nil || s.Size == 0 {
-					continue
-				}
-				//s.PkgIdx = goobj2.PkgIdxSelf
-				//s.SymIdx = symidx
-				symidx++
-				infosyms = append(infosyms, s)
-			}*/
 		}
 	}
-
-	ctxt.SymDefs = append(ctxt.SymDefs, infosyms...)
 }
