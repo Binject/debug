@@ -686,7 +686,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 		for i, sym := range r.p.NonPkgSymDefs[lastFoundSym:] {
 			if strings.HasSuffix(sym.Name, inlFuncSymSuffix) {
 				inl.Func.Name = sym.Name[goInfoPrefixLen : len(sym.Name)-len(inlFuncSymSuffix)]
-				lastFoundSym = i + 1
+				lastFoundSym = i + lastFoundSym + 1
 				break
 			}
 		}
