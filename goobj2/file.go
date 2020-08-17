@@ -26,6 +26,7 @@ import (
 const (
 	inlFuncSymSuffix = "$abstract"
 	goInfoPrefixLen  = 8 // length of "go.info."
+	objHeaderLen     = 80
 )
 
 // A Package is a parsed Go object file or archive defining a Go package.
@@ -53,7 +54,7 @@ func (t textSyms) Len() int {
 }
 
 func (t textSyms) Less(i, j int) bool {
-	return t[i].nonPkg && !t[j].nonPkg
+	return t[i].strOff < t[j].strOff
 }
 
 func (t textSyms) Swap(i, j int) {
@@ -62,11 +63,11 @@ func (t textSyms) Swap(i, j int) {
 	temp = t[i]
 	t[i] = t[j]
 	t[j] = temp
-
 }
 
 type textSym struct {
 	nonPkg bool
+	strOff int
 	sym    *Sym
 }
 
@@ -702,7 +703,34 @@ func (r *objReader) parseObject(prefix []byte) error {
 	// Symbol references were already parsed above
 
 	// Sort text symbols
+	if err := r.sortTextSyms(objbytes); err != nil {
+		return err
+	}
 	sort.Sort(r.p.textSyms)
+
+	return nil
+}
+
+// sortTextSyms sorts the symbols in the TEXT region by when their name appears
+// in the string table.
+// TODO: find better way to order/sort text syms
+func (r *objReader) sortTextSyms(objBytes []byte) error {
+	stringTable := objBytes[objHeaderLen:r.p.Header.Offsets[goobj2.BlkAutolib]]
+
+	for i, textSym := range r.p.textSyms {
+		start := 0
+		for {
+			off := bytes.Index(stringTable[start:], []byte(textSym.sym.Name))
+			if off == -1 {
+				return fmt.Errorf("text symbol not found in string table: %s", textSym.sym.Name)
+			} else if newStart := off + len(textSym.sym.Name); stringTable[newStart+1] == '.' {
+				start += newStart
+			}
+
+			r.p.textSyms[i].strOff = off
+			break
+		}
+	}
 
 	return nil
 }
