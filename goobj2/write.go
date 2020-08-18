@@ -220,21 +220,13 @@ func (w *writer) StringTable() {
 		writeSymStrings(ts.sym)
 	}
 
-	var initFuncSym *Sym
-	for _, s := range w.ctxt.SymDefs {
-		if s.Name == `""..inittask` {
-			initFuncSym = s
-			break
-		}
-	}
-
 	// TODO: optimize by not writing symbols twice
 	syms := [][]*Sym{w.ctxt.NonPkgSymDefs, w.ctxt.SymDefs, w.ctxt.NonPkgSymRefs}
+	w.ctxt.initSym.strOff += objHeaderLen
 	for _, list := range syms {
 		for _, s := range list {
-			// in my testing, the symbol for the 'init' function goes before 'go.itab' symbols
-			if strings.HasPrefix(s.Name, "go.itab.") {
-				writeSymStrings(initFuncSym)
+			if w.Offset() == uint32(w.ctxt.initSym.strOff) {
+				writeSymStrings(w.ctxt.initSym.sym)
 			}
 
 			writeSymStrings(s)

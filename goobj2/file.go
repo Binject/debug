@@ -24,6 +24,7 @@ import (
 )
 
 const (
+	initSymName      = `""..inittask`
 	inlFuncSymSuffix = "$abstract"
 	goInfoPrefixLen  = 8 // length of "go.info."
 	objHeaderLen     = 80
@@ -45,9 +46,10 @@ type Package struct {
 	Arch          string // architecture
 
 	textSyms textSyms
+	initSym  specialSym
 }
 
-type textSyms []textSym
+type textSyms []specialSym
 
 func (t textSyms) Len() int {
 	return len(t)
@@ -58,14 +60,14 @@ func (t textSyms) Less(i, j int) bool {
 }
 
 func (t textSyms) Swap(i, j int) {
-	var temp textSym
+	var temp specialSym
 
 	temp = t[i]
 	t[i] = t[j]
 	t[j] = temp
 }
 
-type textSym struct {
+type specialSym struct {
 	strOff int
 	sym    *Sym
 }
@@ -540,9 +542,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 		}
 
 		if sym.Kind == objabi.STEXT {
-			r.p.textSyms = append(r.p.textSyms, textSym{
-				sym: sym,
-			})
+			r.p.textSyms = append(r.p.textSyms, specialSym{sym: sym})
 		}
 
 		// Symbol data
@@ -667,6 +667,9 @@ func (r *objReader) parseObject(prefix []byte) error {
 	r.p.SymDefs = make([]*Sym, nsymDefs)
 	for i := 0; i < nsymDefs; i++ {
 		parseSym(i, i, r.p.SymDefs)
+		if r.p.SymDefs[i].Name == initSymName {
+			r.p.initSym = specialSym{sym: r.p.SymDefs[i]}
+		}
 	}
 
 	// Non-pkg symbol definitions
@@ -700,7 +703,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 	// Symbol references were already parsed above
 
 	// Sort text symbols
-	if err := r.sortTextSyms(objbytes); err != nil {
+	if err := r.configureSpecialSyms(objbytes); err != nil {
 		return err
 	}
 	sort.Sort(r.p.textSyms)
@@ -708,26 +711,42 @@ func (r *objReader) parseObject(prefix []byte) error {
 	return nil
 }
 
-// sortTextSyms sorts the symbols in the TEXT region by when their name appears
-// in the string table.
-// TODO: find better way to order/sort text syms
-func (r *objReader) sortTextSyms(objBytes []byte) error {
+func (r *objReader) configureSpecialSyms(objBytes []byte) error {
 	stringTable := objBytes[objHeaderLen:r.p.Header.Offsets[goobj2.BlkAutolib]]
 
-	for i, textSym := range r.p.textSyms {
+	strTableOff := func(symName string) int {
 		start := 0
 		for {
-			off := bytes.Index(stringTable[start:], []byte(textSym.sym.Name))
+			off := bytes.Index(stringTable[start:], []byte(symName))
 			if off == -1 {
-				return fmt.Errorf("text symbol not found in string table: %s", textSym.sym.Name)
-			} else if newStart := off + len(textSym.sym.Name); stringTable[newStart+1] == '.' {
+				return -1
+			} else if newStart := off + len(symName); stringTable[newStart+1] == '.' {
 				start += newStart
 			}
 
-			r.p.textSyms[i].strOff = off
-			break
+			return off
 		}
 	}
+
+	// sort the symbols in the TEXT region by when their name appears in the
+	// string table.
+	// TODO: find better way to order/sort text syms
+	for i, textSym := range r.p.textSyms {
+		off := strTableOff(textSym.sym.Name)
+		if off == -1 {
+			return fmt.Errorf("symbol not found in string table: %s", textSym.sym.Name)
+		}
+
+		r.p.textSyms[i].strOff = off
+	}
+
+	// find the offset in the string table of the init symbol.
+	// TODO: find better way to know when to write init symbol
+	off := strTableOff(r.p.initSym.sym.Name)
+	if off == -1 {
+		return fmt.Errorf("symbol not found in string table: %s", r.p.initSym.sym.Name)
+	}
+	r.p.initSym.strOff = off
 
 	return nil
 }
