@@ -66,7 +66,6 @@ func (t textSyms) Swap(i, j int) {
 }
 
 type textSym struct {
-	nonPkg bool
 	strOff int
 	sym    *Sym
 }
@@ -521,7 +520,6 @@ func (r *objReader) parseObject(prefix []byte) error {
 	// Symbols
 	pcdataBase := rr.PcdataBase()
 	ndef := rr.NSym() + rr.NNonpkgdef()
-	npkgDef := ndef - rr.NNonpkgdef()
 	var inlFuncsToResolve []*InlinedCall
 
 	parseSym := func(i, j int, symDefs []*Sym) {
@@ -543,8 +541,7 @@ func (r *objReader) parseObject(prefix []byte) error {
 
 		if sym.Kind == objabi.STEXT {
 			r.p.textSyms = append(r.p.textSyms, textSym{
-				nonPkg: i >= npkgDef,
-				sym:    sym,
+				sym: sym,
 			})
 		}
 
