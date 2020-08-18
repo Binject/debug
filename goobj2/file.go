@@ -694,6 +694,7 @@ func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reade
 	}
 
 	// Resolve missing inlined function names
+	// TODO: will this work when inline functions are from user/third party imports?
 	objReaders := make([]*goobj2.Reader, len(r.p.Packages)-1)
 	for _, inl := range inlFuncsToResolve {
 		if pkgIdx := inl.Func.PkgIdx; objReaders[pkgIdx-1] == nil {
