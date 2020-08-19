@@ -20,6 +20,8 @@ func getNewObjPath(objPath string) string {
 type test struct {
 	name string
 	path string
+	pkg  string
+	obj  bool
 }
 
 func TestWrite(t *testing.T) {
@@ -34,7 +36,7 @@ func TestWrite(t *testing.T) {
 			return nil
 		}
 
-		tests = append(tests, test{info.Name(), path})
+		tests = append(tests, test{info.Name(), path, "", false})
 
 		return nil
 	})
@@ -43,10 +45,15 @@ func TestWrite(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			basename := strings.TrimSuffix(tt.name, filepath.Ext(tt.name))
-			objPath := filepath.Join(tempDir, basename+".o")
-			cmd := exec.Command("go", "tool", "compile", "-o", objPath, tt.path)
-			if err := cmd.Run(); err != nil {
-				t.Fatalf("failed to compile: %v", err)
+			var objPath string
+			if tt.obj {
+				objPath = tt.path
+			} else {
+				objPath = filepath.Join(tempDir, basename+".o")
+				cmd := exec.Command("go", "tool", "compile", "-o", objPath, tt.path)
+				if err := cmd.Run(); err != nil {
+					t.Fatalf("failed to compile: %v", err)
+				}
 			}
 
 			// parse obj file
@@ -56,7 +63,7 @@ func TestWrite(t *testing.T) {
 			}
 			defer f.Close()
 
-			pkg, err := Parse(f)
+			pkg, err := Parse(f, tt.pkg)
 			if err != nil {
 				t.Fatalf("failed to parse object file: %v", err)
 			}
@@ -95,9 +102,9 @@ func TestWrite(t *testing.T) {
 			defer f2.Close()
 
 			// compare parsed packages of the two object files
-			_, err = Parse(f2)
+			_, err = Parse(f2, tt.pkg)
 			if err != nil {
-				t.Fatalf("failed to open new object file: %v", err)
+				t.Fatalf("failed to parse new object file: %v", err)
 			}
 
 			/*if !reflect.DeepEqual(pkg, pkg2) {

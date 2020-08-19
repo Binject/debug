@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -25,16 +26,15 @@ import (
 )
 
 const (
-	initSymName      = `""..inittask`
-	inlFuncSymSuffix = "$abstract"
-	goInfoPrefixLen  = 8 // length of "go.info."
-	objHeaderLen     = 80
+	initSymName  = `""..inittask`
+	objHeaderLen = 80
 )
 
 // A Package is a parsed Go object file or archive defining a Go package.
 type Package struct {
 	header        []byte
 	Header        goobj2.Header
+	ImportPath    string
 	Imports       []goobj2.ImportedPkg // packages imported by this package
 	Packages      []string
 	DWARFFileList []string // List of files for the DWARF .debug_lines section
@@ -163,14 +163,15 @@ var (
 
 // An objReader is an object file reader.
 type objReader struct {
-	p        *Package
-	b        *bufio.Reader
-	f        *os.File
-	err      error
-	offset   int64
-	limit    int64
-	tmp      [256]byte
-	objStart int64
+	p         *Package
+	b         *bufio.Reader
+	f         *os.File
+	err       error
+	offset    int64
+	limit     int64
+	tmp       [256]byte
+	pkgprefix string
+	objStart  int64
 }
 
 // init initializes r to read package p from f.
@@ -181,6 +182,9 @@ func (r *objReader) init(f *os.File, p *Package) {
 	r.limit, _ = f.Seek(0, io.SeekEnd)
 	f.Seek(r.offset, io.SeekStart)
 	r.b = bufio.NewReader(f)
+	if p != nil {
+		r.pkgprefix = objabi.PathToPrefix(p.ImportPath) + "."
+	}
 }
 
 // error records that an error occurred.
@@ -310,8 +314,9 @@ func (r *objReader) skip(n int64) {
 
 // Parse parses an object file or archive from f,
 // assuming that its import path is pkgpath.
-func Parse(f *os.File) (*Package, error) {
+func Parse(f *os.File, pkgPath string) (*Package, error) {
 	p := new(Package)
+	p.ImportPath = pkgPath
 
 	if _, err := parse(f, p, false); err != nil {
 		return nil, err
@@ -678,9 +683,13 @@ func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reade
 	// Symbol definitions
 	nsymDefs := rr.NSym()
 	r.p.SymDefs = make([]*Sym, nsymDefs)
+	realInitSymName := initSymName
+	if r.p.ImportPath != "" {
+		realInitSymName = strings.Replace(initSymName, `""`, r.p.ImportPath, 1)
+	}
 	for i := 0; i < nsymDefs; i++ {
 		parseSym(i, i, r.p.SymDefs)
-		if r.p.SymDefs[i].Name == initSymName {
+		if r.p.SymDefs[i].Name == realInitSymName {
 			r.p.initSym = specialSym{sym: r.p.SymDefs[i]}
 		}
 	}
@@ -698,8 +707,11 @@ func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reade
 	objReaders := make([]*goobj2.Reader, len(r.p.Packages)-1)
 	for _, inl := range inlFuncsToResolve {
 		if pkgIdx := inl.Func.PkgIdx; objReaders[pkgIdx-1] == nil {
-			archiveFile := r.p.Packages[pkgIdx] + ".a"
-			archivePath := filepath.Join(archivePathPrefix, r.p.OS+"_"+r.p.Arch, archiveFile)
+			pkgName := r.p.Packages[pkgIdx]
+			archivePath, err := getArchivePath(pkgName)
+			if err != nil {
+				return nil, fmt.Errorf("error resolving path of archive: %v", err)
+			}
 			f, err := os.Open(os.ExpandEnv(archivePath))
 			if err != nil {
 				return nil, fmt.Errorf("error opening stdlib archive: %v", err)
@@ -736,10 +748,24 @@ func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reade
 	return nil, nil
 }
 
+func getArchivePath(pkg string) (string, error) {
+	cmd := exec.Command("go", "list", "-export", "-f", "{{.Export}}", pkg)
+	path, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(string(path)), nil
+}
+
 func (r *objReader) configureSpecialSyms(objBytes []byte) error {
 	stringTable := objBytes[objHeaderLen:r.p.Header.Offsets[goobj2.BlkAutolib]]
 
-	prefixes := []string{"go.info.", "go.string.", "type.", "runtime.", "gclocals·", "go.itablink.", "go.itab.", "gofile..", "go.cuinfo", `"".`}
+	pkgName := `""`
+	if r.p.ImportPath != "" {
+		pkgName = r.p.ImportPath
+	}
+	prefixes := []string{"go.info.", "go.string.", "type.", "runtime.", "gclocals·", "go.itablink.", "go.itab.", "gofile..", "go.cuinfo", pkgName + "."}
 	for _, pkg := range r.p.Packages {
 		prefixes = append(prefixes, pkg+".")
 	}
@@ -752,6 +778,8 @@ func (r *objReader) configureSpecialSyms(objBytes []byte) error {
 				return -1
 			}
 
+			// check to make sure the string we found isn't actually
+			// a substring of another symbol's name
 			start += off + len(symName)
 			if !isEndOfStr(stringTable[start:], prefixes) {
 				continue
@@ -775,11 +803,13 @@ func (r *objReader) configureSpecialSyms(objBytes []byte) error {
 
 	// find the offset in the string table of the init symbol.
 	// TODO: find better way to know when to write init symbol
-	off := strTableOff(r.p.initSym.sym.Name)
-	if off == -1 {
-		return fmt.Errorf("symbol not found in string table: %s", r.p.initSym.sym.Name)
+	if r.p.initSym.sym != nil {
+		off := strTableOff(r.p.initSym.sym.Name)
+		if off == -1 {
+			return fmt.Errorf("symbol not found in string table: %s", r.p.initSym.sym.Name)
+		}
+		r.p.initSym.strOff = off
 	}
-	r.p.initSym.strOff = off
 
 	return nil
 }
@@ -806,8 +836,9 @@ func isEndOfStr(stringTable []byte, prefixes []string) bool {
 }
 
 func isSymChar(c byte) bool {
-	return (c >= 47 && c <= 57) || // '/' and 0..9
+	return (c >= 40 && c <= 42) || // '(', ')', '*'
+		(c >= 47 && c <= 57) || // '/' and 0..9
 		(c >= 65 && c <= 90) || // A..Z
-		c == 95 || // '_'
+		c == 91 || c == 93 || c == 95 || // '[', ']', '_'
 		(c >= 97 && c <= 122) // a..z
 }

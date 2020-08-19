@@ -225,7 +225,7 @@ func (w *writer) StringTable() {
 	w.ctxt.initSym.strOff += objHeaderLen
 	for _, list := range syms {
 		for _, s := range list {
-			if w.Offset() == uint32(w.ctxt.initSym.strOff) {
+			if w.ctxt.initSym.sym != nil && w.Offset() == uint32(w.ctxt.initSym.strOff) {
 				writeSymStrings(w.ctxt.initSym.sym)
 			}
 
