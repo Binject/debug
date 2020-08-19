@@ -10,6 +10,7 @@ package goobj2
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -19,13 +20,17 @@ import (
 )
 
 // Entry point of writing new object file.
-func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
+func WriteObjFile2(ctxt *Package, objPath string) error {
+	b, err := bio.Create(objPath)
+	if err != nil {
+		return fmt.Errorf("error creating object file: %v", err)
+	}
+
 	//genFuncInfoSyms(ctxt)
 
 	w := writer{
-		Writer:  goobj2.NewWriter(b),
-		ctxt:    ctxt,
-		pkgpath: objabi.PathToPrefix(pkgpath),
+		Writer: goobj2.NewWriter(b),
+		ctxt:   ctxt,
 	}
 
 	// Archive/object file header
@@ -167,12 +172,13 @@ func WriteObjFile2(ctxt *Package, b *bio.Writer, pkgpath string) {
 	b.MustSeek(start, 0)
 	ctxt.Header.Write(w.Writer)
 	b.MustSeek(end, 0)
+
+	return nil
 }
 
 type writer struct {
 	*goobj2.Writer
-	ctxt    *Package
-	pkgpath string // the package import path (escaped), "" if unknown
+	ctxt *Package
 }
 
 func (w *writer) StringTable() {
@@ -222,10 +228,9 @@ func (w *writer) StringTable() {
 
 	// TODO: optimize by not writing symbols twice
 	syms := [][]*Sym{w.ctxt.NonPkgSymDefs, w.ctxt.SymDefs, w.ctxt.NonPkgSymRefs}
-	w.ctxt.initSym.strOff += objHeaderLen
 	for _, list := range syms {
 		for _, s := range list {
-			if w.ctxt.initSym.sym != nil && w.Offset() == uint32(w.ctxt.initSym.strOff) {
+			if w.ctxt.initSym.sym != nil && w.Offset() == w.ctxt.initSym.strOff {
 				writeSymStrings(w.ctxt.initSym.sym)
 			}
 

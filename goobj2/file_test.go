@@ -8,9 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/Binject/debug/goobj2/internal/bio"
-	"github.com/kr/pretty"
 )
 
 func getNewObjPath(objPath string) string {
@@ -57,13 +54,7 @@ func TestWrite(t *testing.T) {
 			}
 
 			// parse obj file
-			f, err := os.Open(objPath)
-			if err != nil {
-				t.Fatalf("failed to open object file: %v", err)
-			}
-			defer f.Close()
-
-			pkg, err := Parse(f, tt.pkg)
+			pkg, err := Parse(objPath, tt.pkg)
 			if err != nil {
 				t.Fatalf("failed to parse object file: %v", err)
 			}
@@ -71,11 +62,7 @@ func TestWrite(t *testing.T) {
 
 			// write obj file
 			newObjPath := getNewObjPath(objPath)
-			b, err := bio.Create(newObjPath)
-			if err != nil {
-				t.Fatalf("failed to create new object file: %v", err)
-			}
-			WriteObjFile2(pkg, b, "")
+			WriteObjFile2(pkg, newObjPath)
 
 			// compare bytes of the original and written object files
 			objBytes, err := ioutil.ReadFile(objPath)
@@ -95,14 +82,8 @@ func TestWrite(t *testing.T) {
 				}
 			}
 
-			f2, err := os.Open(newObjPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer f2.Close()
-
 			// compare parsed packages of the two object files
-			_, err = Parse(f2, tt.pkg)
+			_, err = Parse(newObjPath, tt.pkg)
 			if err != nil {
 				t.Fatalf("failed to parse new object file: %v", err)
 			}
