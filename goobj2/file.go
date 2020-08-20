@@ -47,6 +47,8 @@ type Package struct {
 
 	textSyms textSyms
 	initSym  specialSym
+
+	symMap map[int]*Sym
 }
 
 type textSyms []specialSym
@@ -128,6 +130,8 @@ type Func struct {
 	DwarfLoc        *SymRef
 	DwarfRanges     *SymRef
 	DwarfDebugLines *SymRef
+
+	dataSymIdx int
 }
 
 // TODO: Add PCData []byte and PCDataIter (similar to liblink).
@@ -135,13 +139,13 @@ type Func struct {
 // A FuncData is a single function-specific data value.
 type FuncData struct {
 	Sym    *SymRef // symbol holding data
-	Offset int64   // offset into symbol for funcdata pointer
+	Offset uint32  // offset into symbol for funcdata pointer
 }
 
 // An InlinedCall is a node in an InlTree.
 // See cmd/internal/obj.InlTree for details.
 type InlinedCall struct {
-	Parent   int64
+	Parent   int32
 	File     SymRef
 	Line     int32
 	Func     SymRef
@@ -316,6 +320,7 @@ func (r *objReader) skip(n int64) {
 // assuming that its import path is pkgpath.
 func Parse(objPath, pkgPath string) (*Package, error) {
 	p := new(Package)
+	p.symMap = make(map[int]*Sym)
 	p.ImportPath = pkgPath
 
 	if _, err := parse(objPath, p, false); err != nil {
@@ -564,6 +569,7 @@ func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reade
 			Align: osym.Align(),
 		}
 		symDefs[j] = sym
+		r.p.symMap[i] = sym
 
 		if i >= ndef {
 			return // not a defined symbol from here
@@ -640,24 +646,25 @@ func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reade
 
 		info.Pcdata = append(info.Pcdata, info.PcdataEnd) // for the ease of knowing where it ends
 		f := &Func{
-			Args:     int64(info.Args),
-			Frame:    int64(info.Locals),
-			PCSP:     rr.BytesAt(pcdataBase+info.Pcsp, int(info.Pcfile-info.Pcsp)),
-			PCFile:   rr.BytesAt(pcdataBase+info.Pcfile, int(info.Pcline-info.Pcfile)),
-			PCLine:   rr.BytesAt(pcdataBase+info.Pcline, int(info.Pcinline-info.Pcline)),
-			PCInline: rr.BytesAt(pcdataBase+info.Pcinline, int(info.Pcdata[0]-info.Pcinline)),
-			PCData:   make([][]byte, len(info.Pcdata)-1), // -1 as we appended one above
-			FuncData: make([]FuncData, len(info.Funcdataoff)),
-			File:     make([]SymRef, len(info.File)),
-			InlTree:  make([]*InlinedCall, len(info.InlTree)),
-			FuncInfo: funcInfo,
+			Args:       int64(info.Args),
+			Frame:      int64(info.Locals),
+			PCSP:       rr.BytesAt(pcdataBase+info.Pcsp, int(info.Pcfile-info.Pcsp)),
+			PCFile:     rr.BytesAt(pcdataBase+info.Pcfile, int(info.Pcline-info.Pcfile)),
+			PCLine:     rr.BytesAt(pcdataBase+info.Pcline, int(info.Pcinline-info.Pcline)),
+			PCInline:   rr.BytesAt(pcdataBase+info.Pcinline, int(info.Pcdata[0]-info.Pcinline)),
+			PCData:     make([][]byte, len(info.Pcdata)-1), // -1 as we appended one above
+			FuncData:   make([]FuncData, len(info.Funcdataoff)),
+			File:       make([]SymRef, len(info.File)),
+			InlTree:    make([]*InlinedCall, len(info.InlTree)),
+			FuncInfo:   funcInfo,
+			dataSymIdx: isym,
 		}
 		sym.Func = f
 		for k := range f.PCData {
 			f.PCData[k] = rr.BytesAt(pcdataBase+info.Pcdata[k], int(info.Pcdata[k+1]-info.Pcdata[k]))
 		}
 		for k := range f.FuncData {
-			f.FuncData[k] = FuncData{funcdata[k], int64(info.Funcdataoff[k])}
+			f.FuncData[k] = FuncData{funcdata[k], info.Funcdataoff[k]}
 		}
 		for k := range f.File {
 			f.File[k] = SymRef{resolveSymRefName(info.File[k]), info.File[k]}
@@ -665,7 +672,7 @@ func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reade
 		for k := range f.InlTree {
 			inl := &info.InlTree[k]
 			f.InlTree[k] = &InlinedCall{
-				Parent:   int64(inl.Parent),
+				Parent:   inl.Parent,
 				File:     SymRef{resolveSymRefName(inl.File), inl.File},
 				Line:     inl.Line,
 				Func:     SymRef{resolveSymRefName(inl.Func), inl.Func},

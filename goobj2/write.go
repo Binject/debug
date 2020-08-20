@@ -334,52 +334,51 @@ func nAuxSym(s *Sym) int {
 func genFuncInfoSyms(ctxt *Package) {
 	var pcdataoff uint32
 	var b bytes.Buffer
-	syms := [][]*Sym{ctxt.SymDefs, ctxt.NonPkgSymDefs}
-	for _, list := range syms {
-		for _, s := range list {
-			if s.Kind != objabi.STEXT || s.Func == nil {
-				continue
-			}
-			o := goobj2.FuncInfo{
-				Args:   uint32(s.Func.Args),
-				Locals: uint32(s.Func.Frame),
-			}
-			o.Pcsp = pcdataoff
-			pcdataoff += uint32(len(s.Func.PCSP))
-			o.Pcfile = pcdataoff
-			pcdataoff += uint32(len(s.Func.PCFile))
-			o.Pcline = pcdataoff
-			pcdataoff += uint32(len(s.Func.PCLine))
-			o.Pcinline = pcdataoff
-			pcdataoff += uint32(len(s.Func.PCInline))
-			o.Pcdata = make([]uint32, len(s.Func.FuncData))
-			for i, pcd := range s.Func.PCData {
-				o.Pcdata[i] = pcdataoff
-				pcdataoff += uint32(len(pcd))
-			}
-			o.PcdataEnd = pcdataoff
-			o.Funcdataoff = make([]uint32, len(s.Func.FuncData))
-			for i, x := range s.Func.FuncData {
-				o.Funcdataoff[i] = uint32(x.Offset)
-			}
-			o.File = make([]goobj2.SymRef, len(s.Func.File))
-			for i, f := range s.Func.File {
-				o.File[i] = f.SymRef
-			}
-			o.InlTree = make([]goobj2.InlTreeNode, len(s.Func.InlTree))
-			for i, inl := range s.Func.InlTree {
-				o.InlTree[i] = goobj2.InlTreeNode{
-					Parent:   int32(inl.Parent),
-					File:     inl.File.SymRef,
-					Line:     inl.Line,
-					Func:     inl.Func.SymRef,
-					ParentPC: inl.ParentPC,
-				}
-			}
-
-			o.Write(&b)
-			s.Data = b.Bytes()
-			b.Reset()
+	for _, textSym := range ctxt.textSyms {
+		s := textSym.sym
+		if s.Func == nil {
+			continue
 		}
+
+		o := goobj2.FuncInfo{
+			Args:   uint32(s.Func.Args),
+			Locals: uint32(s.Func.Frame),
+		}
+		o.Pcsp = pcdataoff
+		pcdataoff += uint32(len(s.Func.PCSP))
+		o.Pcfile = pcdataoff
+		pcdataoff += uint32(len(s.Func.PCFile))
+		o.Pcline = pcdataoff
+		pcdataoff += uint32(len(s.Func.PCLine))
+		o.Pcinline = pcdataoff
+		pcdataoff += uint32(len(s.Func.PCInline))
+		o.Pcdata = make([]uint32, len(s.Func.PCData))
+		for i, pcd := range s.Func.PCData {
+			o.Pcdata[i] = pcdataoff
+			pcdataoff += uint32(len(pcd))
+		}
+		o.PcdataEnd = pcdataoff
+		o.Funcdataoff = make([]uint32, len(s.Func.FuncData))
+		for i, x := range s.Func.FuncData {
+			o.Funcdataoff[i] = x.Offset
+		}
+		o.File = make([]goobj2.SymRef, len(s.Func.File))
+		for i, f := range s.Func.File {
+			o.File[i] = f.SymRef
+		}
+		o.InlTree = make([]goobj2.InlTreeNode, len(s.Func.InlTree))
+		for i, inl := range s.Func.InlTree {
+			o.InlTree[i] = goobj2.InlTreeNode{
+				Parent:   inl.Parent,
+				File:     inl.File.SymRef,
+				Line:     inl.Line,
+				Func:     inl.Func.SymRef,
+				ParentPC: inl.ParentPC,
+			}
+		}
+
+		o.Write(&b)
+		ctxt.symMap[s.Func.dataSymIdx].Data = append([]byte(nil), b.Bytes()...)
+		b.Reset()
 	}
 }
