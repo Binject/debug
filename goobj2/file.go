@@ -26,24 +26,25 @@ import (
 )
 
 const (
-	initSymName  = `""..inittask`
-	objHeaderLen = 80
+	archiveHeaderLen = 60
+	initSymName      = `""..inittask`
+	objHeaderLen     = 80
 )
 
 // A Package is a parsed Go object file or archive defining a Go package.
 type Package struct {
-	header        []byte
-	Header        goobj2.Header
-	ImportPath    string
-	Imports       []goobj2.ImportedPkg // packages imported by this package
-	Packages      []string
-	DWARFFileList []string // List of files for the DWARF .debug_lines section
-	SymDefs       []*Sym
-	NonPkgSymDefs []*Sym
-	NonPkgSymRefs []*Sym
-	SymRefs       []SymRef
-	OS            string
-	Arch          string // architecture
+	ArchiveHeaders []ArchiveHeader
+	Header         goobj2.Header
+	ImportPath     string
+	Imports        []goobj2.ImportedPkg // packages imported by this package
+	Packages       []string
+	DWARFFileList  []string // List of files for the DWARF .debug_lines section
+	SymDefs        []*Sym
+	NonPkgSymDefs  []*Sym
+	NonPkgSymRefs  []*Sym
+	SymRefs        []SymRef
+	OS             string
+	Arch           string // architecture
 
 	textSyms textSyms
 	initSym  specialSym
@@ -51,27 +52,14 @@ type Package struct {
 	symMap map[int]*Sym
 }
 
-type textSyms []specialSym
-
-func (t textSyms) Len() int {
-	return len(t)
-}
-
-func (t textSyms) Less(i, j int) bool {
-	return t[i].strOff < t[j].strOff
-}
-
-func (t textSyms) Swap(i, j int) {
-	var temp specialSym
-
-	temp = t[i]
-	t[i] = t[j]
-	t[j] = temp
-}
-
-type specialSym struct {
-	strOff uint32
-	sym    *Sym
+type ArchiveHeader struct {
+	Name string
+	Date string
+	UID  string
+	GID  string
+	Mode string
+	Size int64
+	Data []byte
 }
 
 // A Sym is a named symbol in an object file.
@@ -150,6 +138,29 @@ type InlinedCall struct {
 	Line     int32
 	Func     SymRef
 	ParentPC int32
+}
+
+type textSyms []specialSym
+
+func (t textSyms) Len() int {
+	return len(t)
+}
+
+func (t textSyms) Less(i, j int) bool {
+	return t[i].strOff < t[j].strOff
+}
+
+func (t textSyms) Swap(i, j int) {
+	var temp specialSym
+
+	temp = t[i]
+	t[i] = t[j]
+	t[j] = temp
+}
+
+type specialSym struct {
+	strOff uint32
+	sym    *Sym
 }
 
 var (
@@ -361,7 +372,7 @@ func parse(objPath string, p *Package, returnReader bool) (rr *goobj2.Reader, er
 			return nil, err
 		}
 	case bytes.Equal(rd.tmp[:8], goobjHeader):
-		rr, err = rd.parseObject(goobjHeader, returnReader)
+		rr, _, err = rd.parseObject(goobjHeader, returnReader)
 		if err != nil {
 			return nil, err
 		}
@@ -379,10 +390,10 @@ func trimSpace(b []byte) string {
 // parseArchive parses a Unix archive of Go object files.
 func (r *objReader) parseArchive(returnReader bool) (*goobj2.Reader, error) {
 	for r.offset < r.limit {
-		if err := r.readFull(r.tmp[:60]); err != nil {
+		if err := r.readFull(r.tmp[:archiveHeaderLen]); err != nil {
 			return nil, err
 		}
-		data := r.tmp[:60]
+		data := r.tmp[:archiveHeaderLen]
 
 		// Each file is preceded by this text header (slice indices in first column):
 		//	 0:16	name
@@ -392,33 +403,48 @@ func (r *objReader) parseArchive(returnReader bool) (*goobj2.Reader, error) {
 		//	40:48 mode
 		//	48:58 size
 		//	58:60 magic - `\n
-		// We only care about name, size, and magic.
 		// The fields are space-padded on the right.
 		// The size is in decimal.
 		// The file data - size bytes - follows the header.
 		// Headers are 2-byte aligned, so if size is odd, an extra padding
 		// byte sits between the file data and the next header.
 		// The file data that follows is padded to an even number of bytes:
-		// if size is odd, an extra padding byte is inserted betw the next header.
-		if len(data) < 60 {
+		// if size is odd, an extra padding byte is inserted between the next header.
+		if len(data) < archiveHeaderLen {
 			return nil, errTruncatedArchive
 		}
 		if !bytes.Equal(data[58:60], archiveMagic) {
 			return nil, errCorruptArchive
 		}
-		name := trimSpace(data[0:16])
+
+		var ar ArchiveHeader
+		ar.Name = trimSpace(data[0:16])
+		ar.Date = trimSpace(data[16:28])
+		ar.UID = trimSpace(data[28:34])
+		ar.GID = trimSpace(data[34:40])
+		ar.Mode = trimSpace(data[40:48])
 		size, err := strconv.ParseInt(trimSpace(data[48:58]), 10, 64)
 		if err != nil {
 			return nil, errCorruptArchive
 		}
-		data = data[60:]
+
+		data = data[archiveHeaderLen:]
 		fsize := size + size&1
 		if fsize < 0 || fsize < size {
 			return nil, errCorruptArchive
 		}
-		switch name {
+		ar.Size = size
+
+		switch ar.Name {
 		case "__.PKGDEF":
-			r.skip(size)
+			ar.Data = make([]byte, size)
+			if err := r.readFull(ar.Data); err != nil {
+				return nil, err
+			}
+			if fsize != size {
+				ar.Data = append(ar.Data, 0x00)
+			}
+
 		default:
 			oldLimit := r.limit
 			r.limit = r.offset + size
@@ -428,13 +454,14 @@ func (r *objReader) parseArchive(returnReader bool) (*goobj2.Reader, error) {
 				return nil, err
 			}
 			if bytes.Equal(p, goobjHeader) {
-				rr, err := r.parseObject(nil, returnReader)
+				rr, data, err := r.parseObject(nil, returnReader)
 				if err != nil {
-					return nil, fmt.Errorf("parsing archive member %q: %v", name, err)
+					return nil, fmt.Errorf("parsing archive member %q: %v", ar.Name, err)
 				}
 				if returnReader {
 					return rr, nil
 				}
+				ar.Data = data
 			}
 
 			r.skip(r.limit - r.offset)
@@ -443,11 +470,11 @@ func (r *objReader) parseArchive(returnReader bool) (*goobj2.Reader, error) {
 		if size&1 != 0 {
 			r.skip(1)
 		}
-	}
 
-	// Object header
-	r.p.header = make([]byte, r.objStart)
-	r.f.ReadAt(r.p.header, 0)
+		if r.p != nil {
+			r.p.ArchiveHeaders = append(r.p.ArchiveHeaders, ar)
+		}
+	}
 
 	return nil, nil
 }
@@ -459,7 +486,7 @@ func (r *objReader) parseArchive(returnReader bool) (*goobj2.Reader, error) {
 // and then the part we want to parse begins.
 // The format of that part is defined in a comment at the top
 // of src/liblink/objfile.c.
-func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reader, error) {
+func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reader, []byte, error) {
 	h := make([]byte, 0, 256)
 	h = append(h, prefix...)
 	var c1, c2, c3 byte
@@ -469,7 +496,7 @@ func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reade
 		// The new export format can contain 0 bytes.
 		// Don't consider them errors, only look for r.err != nil.
 		if r.err != nil {
-			return nil, errCorruptObject
+			return nil, nil, errCorruptObject
 		}
 		if c1 == '\n' && c2 == '!' && c3 == '\n' {
 			break
@@ -484,10 +511,10 @@ func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reade
 
 	p, err := r.peek(8)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !bytes.Equal(p, []byte(goobj2.Magic)) {
-		return nil, errNotObject
+		return nil, nil, errNotObject
 	}
 
 	r.objStart = r.offset
@@ -496,10 +523,10 @@ func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reade
 	r.readFull(objbytes)
 	rr := goobj2.NewReaderFromBytes(objbytes, false)
 	if rr == nil {
-		return nil, errCorruptObject
+		return nil, nil, errCorruptObject
 	}
 	if returnReader {
-		return rr, nil
+		return rr, nil, nil
 	}
 
 	// Header
@@ -727,11 +754,11 @@ func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reade
 			pkgName := r.p.Packages[pkgIdx]
 			archivePath, err := getArchivePath(pkgName)
 			if err != nil {
-				return nil, fmt.Errorf("error resolving path of archive: %v", err)
+				return nil, nil, fmt.Errorf("error resolving path of archive: %v", err)
 			}
 			rr, err := parse(archivePath, nil, true)
 			if err != nil {
-				return nil, fmt.Errorf("error parsing stdlib archive: %v", err)
+				return nil, nil, fmt.Errorf("error parsing stdlib archive: %v", err)
 			}
 			objReaders[pkgIdx-1] = rr
 		}
@@ -752,11 +779,11 @@ func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reade
 
 	// Sort text symbols
 	if err := r.configureSpecialSyms(objbytes); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sort.Sort(r.p.textSyms)
 
-	return nil, nil
+	return nil, h, nil
 }
 
 func getArchivePath(pkg string) (string, error) {

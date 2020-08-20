@@ -26,15 +26,29 @@ func WriteObjFile2(ctxt *Package, objPath string) error {
 		return fmt.Errorf("error creating object file: %v", err)
 	}
 
-	//genFuncInfoSyms(ctxt)
+	genFuncInfoSyms(ctxt)
 
 	w := writer{
 		Writer: goobj2.NewWriter(b),
 		ctxt:   ctxt,
 	}
 
-	// Archive/object file header
-	b.Write(ctxt.header)
+	// Archive headers
+	b.Write(archiveHeader)
+	var arhdr [archiveHeaderLen]byte
+	var lastArHdrOff, lastObjDataOff int64
+	lastArHdr := len(ctxt.ArchiveHeaders) - 1
+	for i, ar := range ctxt.ArchiveHeaders {
+		if i == lastArHdr {
+			lastArHdrOff = b.Offset()
+		}
+		copy(arhdr[:], fmt.Sprintf("%-16s%-12s%-6s%-6s%-8s%-10d`\n", ar.Name, ar.Date, ar.UID, ar.GID, ar.Mode, ar.Size))
+		b.Write(arhdr[:])
+		if i == lastArHdr {
+			lastObjDataOff = b.Offset()
+		}
+		b.Write(ar.Data)
+	}
 
 	start := b.Offset()
 
@@ -165,9 +179,21 @@ func WriteObjFile2(ctxt *Package, objPath string) error {
 		o.Write(w.Writer)
 	}
 
-	ctxt.Header.Offsets[goobj2.BlkEnd] = w.Offset()
+	objEnd := w.Offset()
+	ctxt.Header.Offsets[goobj2.BlkEnd] = objEnd
 
-	// Fix up block offsets in the header
+	// If the object size is odd, make it even by adding an
+	// extra null byte as padding
+	size := int64(objEnd) + (start - lastObjDataOff)
+	if size%2 != 0 {
+		b.WriteByte(0x00)
+	}
+
+	// Fix size field of the last archive header
+	b.MustSeek(lastArHdrOff+48, 0)
+	b.WriteString(fmt.Sprintf("%-10d", size))
+
+	// Fix up block offsets in the object header
 	end := start + int64(w.Offset())
 	b.MustSeek(start, 0)
 	ctxt.Header.Write(w.Writer)

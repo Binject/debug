@@ -75,11 +75,7 @@ func TestWrite(t *testing.T) {
 			}
 
 			if !bytes.Equal(objBytes, newObjBytes) {
-				// sometimes the only difference is that the original object file has an
-				// extra null byte at the end that does not affect anything. Not sure why
-				if !bytes.Equal(objBytes[:len(objBytes)-1], newObjBytes) {
-					t.Error("object files are not the same")
-				}
+				t.Error("object files are not the same")
 			}
 
 			// compare parsed packages of the two object files
