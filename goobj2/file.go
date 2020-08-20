@@ -329,19 +329,19 @@ func (r *objReader) skip(n int64) {
 
 // Parse parses an object file or archive from f,
 // assuming that its import path is pkgpath.
-func Parse(objPath, pkgPath string) (*Package, error) {
+func Parse(objPath, pkgPath string, importCfg []byte) (*Package, error) {
 	p := new(Package)
 	p.symMap = make(map[int]*Sym)
 	p.ImportPath = pkgPath
 
-	if _, err := parse(objPath, p, false); err != nil {
+	if _, err := parse(objPath, p, importCfg, false); err != nil {
 		return nil, err
 	}
 
 	return p, nil
 }
 
-func parse(objPath string, p *Package, returnReader bool) (rr *goobj2.Reader, err error) {
+func parse(objPath string, p *Package, importCfg []byte, returnReader bool) (rr *goobj2.Reader, err error) {
 	f, openErr := os.Open(objPath)
 	if err != nil {
 		return nil, openErr
@@ -367,12 +367,12 @@ func parse(objPath string, p *Package, returnReader bool) (rr *goobj2.Reader, er
 	default:
 		return nil, errNotObject
 	case bytes.Equal(rd.tmp[:8], archiveHeader):
-		rr, err = rd.parseArchive(returnReader)
+		rr, err = rd.parseArchive(importCfg, returnReader)
 		if err != nil {
 			return nil, err
 		}
 	case bytes.Equal(rd.tmp[:8], goobjHeader):
-		rr, _, err = rd.parseObject(goobjHeader, returnReader)
+		rr, _, err = rd.parseObject(goobjHeader, importCfg, returnReader)
 		if err != nil {
 			return nil, err
 		}
@@ -388,7 +388,7 @@ func trimSpace(b []byte) string {
 }
 
 // parseArchive parses a Unix archive of Go object files.
-func (r *objReader) parseArchive(returnReader bool) (*goobj2.Reader, error) {
+func (r *objReader) parseArchive(importCfg []byte, returnReader bool) (*goobj2.Reader, error) {
 	for r.offset < r.limit {
 		if err := r.readFull(r.tmp[:archiveHeaderLen]); err != nil {
 			return nil, err
@@ -454,7 +454,7 @@ func (r *objReader) parseArchive(returnReader bool) (*goobj2.Reader, error) {
 				return nil, err
 			}
 			if bytes.Equal(p, goobjHeader) {
-				rr, data, err := r.parseObject(nil, returnReader)
+				rr, data, err := r.parseObject(nil, importCfg, returnReader)
 				if err != nil {
 					return nil, fmt.Errorf("parsing archive member %q: %v", ar.Name, err)
 				}
@@ -486,7 +486,7 @@ func (r *objReader) parseArchive(returnReader bool) (*goobj2.Reader, error) {
 // and then the part we want to parse begins.
 // The format of that part is defined in a comment at the top
 // of src/liblink/objfile.c.
-func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reader, []byte, error) {
+func (r *objReader) parseObject(prefix, importCfg []byte, returnReader bool) (*goobj2.Reader, []byte, error) {
 	h := make([]byte, 0, 256)
 	h = append(h, prefix...)
 	var c1, c2, c3 byte
@@ -746,27 +746,6 @@ func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reade
 		parseSym(i+parsedSyms, i, r.p.NonPkgSymDefs)
 	}
 
-	// Resolve missing inlined function names
-	// TODO: will this work when inline functions are from user/third party imports?
-	objReaders := make([]*goobj2.Reader, len(r.p.Packages)-1)
-	for _, inl := range inlFuncsToResolve {
-		if pkgIdx := inl.Func.PkgIdx; objReaders[pkgIdx-1] == nil {
-			pkgName := r.p.Packages[pkgIdx]
-			archivePath, err := getArchivePath(pkgName)
-			if err != nil {
-				return nil, nil, fmt.Errorf("error resolving path of archive: %v", err)
-			}
-			rr, err := parse(archivePath, nil, true)
-			if err != nil {
-				return nil, nil, fmt.Errorf("error parsing stdlib archive: %v", err)
-			}
-			objReaders[pkgIdx-1] = rr
-		}
-
-		rr := objReaders[inl.Func.PkgIdx-1]
-		inl.Func.Name = rr.Sym(int(inl.Func.SymIdx)).Name(rr)
-	}
-
 	// Non-pkg symbol references
 	nNonPkgRefs := rr.NNonpkgref()
 	r.p.NonPkgSymRefs = make([]*Sym, nNonPkgRefs)
@@ -783,10 +762,50 @@ func (r *objReader) parseObject(prefix []byte, returnReader bool) (*goobj2.Reade
 	}
 	sort.Sort(r.p.textSyms)
 
+	// Resolve missing inlined function names
+	if len(inlFuncsToResolve) == 0 {
+		return nil, h, nil
+	}
+
+	var importMap map[string]string
+	if len(importCfg) != 0 {
+		importMap, err = parseImportCfg(importCfg)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	objReaders := make([]*goobj2.Reader, len(r.p.Packages)-1)
+	for _, inl := range inlFuncsToResolve {
+		if pkgIdx := inl.Func.PkgIdx; objReaders[pkgIdx-1] == nil {
+			pkgName := r.p.Packages[pkgIdx]
+			archivePath, err := getArchivePath(pkgName, importMap)
+			if err != nil {
+				return nil, nil, fmt.Errorf("error resolving path of archive: %v", err)
+			}
+			rr, err := parse(archivePath, nil, nil, true)
+			if err != nil {
+				return nil, nil, fmt.Errorf("error parsing stdlib archive: %v", err)
+			}
+			objReaders[pkgIdx-1] = rr
+		}
+
+		rr := objReaders[inl.Func.PkgIdx-1]
+		inl.Func.Name = rr.Sym(int(inl.Func.SymIdx)).Name(rr)
+	}
+
 	return nil, h, nil
 }
 
-func getArchivePath(pkg string) (string, error) {
+func getArchivePath(pkg string, importMap map[string]string) (string, error) {
+	if importMap != nil {
+		path, ok := importMap[pkg]
+		if !ok {
+			return "", fmt.Errorf("could not find package %s in importcfg", pkg)
+		}
+		return path, nil
+	}
+
 	cmd := exec.Command("go", "list", "-export", "-f", "{{.Export}}", pkg)
 	path, err := cmd.Output()
 	if err != nil {
@@ -880,4 +899,44 @@ func isSymChar(c byte) bool {
 		(c >= 65 && c <= 90) || // A..Z
 		c == 91 || c == 93 || c == 95 || // '[', ']', '_'
 		(c >= 97 && c <= 122) // a..z
+}
+
+func parseImportCfg(importCfg []byte) (map[string]string, error) {
+	lines := bytes.Count(importCfg, []byte("\n"))
+	if lines == -1 {
+		return nil, errors.New("error parsing importcfg: could not find any newlines")
+	}
+
+	importMap := make(map[string]string, lines)
+	r := bufio.NewScanner(bytes.NewReader(importCfg))
+	r.Split(bufio.ScanRunes)
+
+	var sb strings.Builder
+	var temp string
+	var pkgstr bool
+	for r.Scan() {
+		t := r.Text()
+		switch t {
+		case " ":
+			pkgstr = true
+			continue
+		case "=":
+			temp = sb.String()
+			sb.Reset()
+		case "\n", "\r":
+			importMap[temp] = sb.String()
+			sb.Reset()
+			pkgstr = false
+		default:
+			if pkgstr {
+				sb.WriteString(t)
+			}
+		}
+	}
+
+	if err := r.Err(); err != nil {
+		return nil, err
+	}
+
+	return importMap, nil
 }
