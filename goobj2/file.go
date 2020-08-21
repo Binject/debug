@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,13 +44,21 @@ type Package struct {
 	NonPkgSymDefs  []*Sym
 	NonPkgSymRefs  []*Sym
 	SymRefs        []SymRef
-	OS             string
-	Arch           string // architecture
+	os             string
+	arch           string
 
 	textSyms textSyms
 	initSym  specialSym
 
 	symMap map[int]*Sym
+}
+
+func (p Package) OS() string {
+	return p.os
+}
+
+func (p Package) Arch() string {
+	return p.arch
 }
 
 type ArchiveHeader struct {
@@ -161,6 +170,64 @@ func (t textSyms) Swap(i, j int) {
 type specialSym struct {
 	strOff uint32
 	sym    *Sym
+}
+
+type ImportCfg map[string]ExportInfo
+
+type ExportInfo struct {
+	Path        string
+	IsSharedLib bool
+}
+
+func ParseImportCfg(path string) (ImportCfg, error) {
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("error reading importcfg: %v", err)
+	}
+
+	lines := bytes.Count(data, []byte("\n"))
+	if lines == -1 {
+		return nil, errors.New("error parsing importcfg: could not find any newlines")
+	}
+	importMap := make(ImportCfg, lines)
+
+	for lineNum, line := range strings.Split(string(data), "\n") {
+		lineNum++ // 1-based
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		var verb, args string
+		if i := strings.Index(line, " "); i < 0 {
+			verb = line
+		} else {
+			verb, args = line[:i], strings.TrimSpace(line[i+1:])
+		}
+		var before, after string
+		if i := strings.Index(args, "="); i >= 0 {
+			before, after = args[:i], args[i+1:]
+		}
+		switch verb {
+		default:
+			return nil, fmt.Errorf("error parsing importcfg: %s:%d: unknown directive %q", path, lineNum, verb)
+		case "packagefile":
+			if before == "" || after == "" {
+				return nil, fmt.Errorf(`error parsing importcfg: %s:%d: invalid packagefile: syntax is "packagefile path=filename"`, path, lineNum)
+			}
+			importMap[before] = ExportInfo{after, false}
+		case "packageshlib":
+			if before == "" || after == "" {
+				return nil, fmt.Errorf(`error parsing importcfg: %s:%d: invalid packageshlib: syntax is "packageshlib path=filename"`, path, lineNum)
+			}
+			importMap[before] = ExportInfo{after, true}
+		}
+	}
+
+	return importMap, nil
 }
 
 var (
@@ -329,7 +396,7 @@ func (r *objReader) skip(n int64) {
 
 // Parse parses an object file or archive from f,
 // assuming that its import path is pkgpath.
-func Parse(objPath, pkgPath string, importCfg []byte) (*Package, error) {
+func Parse(objPath, pkgPath string, importCfg ImportCfg) (*Package, error) {
 	p := new(Package)
 	p.symMap = make(map[int]*Sym)
 	p.ImportPath = pkgPath
@@ -341,7 +408,7 @@ func Parse(objPath, pkgPath string, importCfg []byte) (*Package, error) {
 	return p, nil
 }
 
-func parse(objPath string, p *Package, importCfg []byte, returnReader bool) (rr *goobj2.Reader, err error) {
+func parse(objPath string, p *Package, importCfg ImportCfg, returnReader bool) (rr *goobj2.Reader, err error) {
 	f, openErr := os.Open(objPath)
 	if err != nil {
 		return nil, openErr
@@ -388,7 +455,7 @@ func trimSpace(b []byte) string {
 }
 
 // parseArchive parses a Unix archive of Go object files.
-func (r *objReader) parseArchive(importCfg []byte, returnReader bool) (*goobj2.Reader, error) {
+func (r *objReader) parseArchive(importCfg ImportCfg, returnReader bool) (*goobj2.Reader, error) {
 	for r.offset < r.limit {
 		if err := r.readFull(r.tmp[:archiveHeaderLen]); err != nil {
 			return nil, err
@@ -486,7 +553,7 @@ func (r *objReader) parseArchive(importCfg []byte, returnReader bool) (*goobj2.R
 // and then the part we want to parse begins.
 // The format of that part is defined in a comment at the top
 // of src/liblink/objfile.c.
-func (r *objReader) parseObject(prefix, importCfg []byte, returnReader bool) (*goobj2.Reader, []byte, error) {
+func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader bool) (*goobj2.Reader, []byte, error) {
 	h := make([]byte, 0, 256)
 	h = append(h, prefix...)
 	var c1, c2, c3 byte
@@ -505,8 +572,8 @@ func (r *objReader) parseObject(prefix, importCfg []byte, returnReader bool) (*g
 
 	hs := strings.Fields(string(h))
 	if len(hs) >= 4 && !returnReader {
-		r.p.OS = hs[2]
-		r.p.Arch = hs[3]
+		r.p.os = hs[2]
+		r.p.arch = hs[3]
 	}
 
 	p, err := r.peek(8)
@@ -767,14 +834,6 @@ func (r *objReader) parseObject(prefix, importCfg []byte, returnReader bool) (*g
 		return nil, h, nil
 	}
 
-	var importMap map[string]string
-	if len(importCfg) != 0 {
-		importMap, err = parseImportCfg(importCfg)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-
 	objReaders := make([]*goobj2.Reader, len(r.p.Packages)-1)
 	for _, inl := range inlFuncsToResolve {
 		if pkgIdx := inl.Func.PkgIdx; objReaders[pkgIdx-1] == nil {
@@ -797,13 +856,13 @@ func (r *objReader) parseObject(prefix, importCfg []byte, returnReader bool) (*g
 	return nil, h, nil
 }
 
-func getArchivePath(pkg string, importMap map[string]string) (string, error) {
+func getArchivePath(pkg string, importMap ImportCfg) (string, error) {
+	// try to get the archive path from the importMap first
 	if importMap != nil {
 		path, ok := importMap[pkg]
-		if !ok {
-			return "", fmt.Errorf("could not find package %s in importcfg", pkg)
+		if ok {
+			return path.Path, nil
 		}
-		return path, nil
 	}
 
 	cmd := exec.Command("go", "list", "-export", "-f", "{{.Export}}", pkg)
@@ -899,44 +958,4 @@ func isSymChar(c byte) bool {
 		(c >= 65 && c <= 90) || // A..Z
 		c == 91 || c == 93 || c == 95 || // '[', ']', '_'
 		(c >= 97 && c <= 122) // a..z
-}
-
-func parseImportCfg(importCfg []byte) (map[string]string, error) {
-	lines := bytes.Count(importCfg, []byte("\n"))
-	if lines == -1 {
-		return nil, errors.New("error parsing importcfg: could not find any newlines")
-	}
-
-	importMap := make(map[string]string, lines)
-	r := bufio.NewScanner(bytes.NewReader(importCfg))
-	r.Split(bufio.ScanRunes)
-
-	var sb strings.Builder
-	var temp string
-	var pkgstr bool
-	for r.Scan() {
-		t := r.Text()
-		switch t {
-		case " ":
-			pkgstr = true
-			continue
-		case "=":
-			temp = sb.String()
-			sb.Reset()
-		case "\n", "\r":
-			importMap[temp] = sb.String()
-			sb.Reset()
-			pkgstr = false
-		default:
-			if pkgstr {
-				sb.WriteString(t)
-			}
-		}
-	}
-
-	if err := r.Err(); err != nil {
-		return nil, err
-	}
-
-	return importMap, nil
 }
