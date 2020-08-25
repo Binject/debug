@@ -20,191 +20,193 @@ import (
 )
 
 // Entry point of writing new object file.
-func WriteObjFile2(ctxt *Package, objPath string) error {
+func WriteObjFile2(pkg *Package, objPath string) error {
 	b, err := bio.Create(objPath)
 	if err != nil {
 		return fmt.Errorf("error creating object file: %v", err)
 	}
 
-	genFuncInfoSyms(ctxt)
-
-	w := writer{
-		Writer: goobj2.NewWriter(b),
-		ctxt:   ctxt,
-	}
-
 	// Archive headers
 	b.Write(archiveHeader)
 	var arhdr [archiveHeaderLen]byte
-	var lastArHdrOff, lastObjDataOff int64
-	lastArHdr := len(ctxt.ArchiveHeaders) - 1
-	for i, ar := range ctxt.ArchiveHeaders {
-		if i == lastArHdr {
-			lastArHdrOff = b.Offset()
-		}
+	var curArHdrOff, curObjStartOff int64
+	for i := range pkg.ArchiveMembers {
+		ctxt := &pkg.ArchiveMembers[i]
+		ar := ctxt.ArchiveHeader
+		curArHdrOff = b.Offset()
+
 		copy(arhdr[:], fmt.Sprintf("%-16s%-12s%-6s%-6s%-8s%-10d`\n", ar.Name, ar.Date, ar.UID, ar.GID, ar.Mode, ar.Size))
 		b.Write(arhdr[:])
-		if i == lastArHdr {
-			lastObjDataOff = b.Offset()
-		}
+		curObjStartOff = b.Offset()
 		b.Write(ar.Data)
-	}
-
-	start := b.Offset()
-
-	// Header
-	// We just reserve the space. We'll fill in the offsets later.
-	ctxt.Header.Write(w.Writer)
-
-	// String table
-	w.StringTable()
-
-	// Autolib
-	ctxt.Header.Offsets[goobj2.BlkAutolib] = w.Offset()
-	for i := range ctxt.Imports {
-		ctxt.Imports[i].Write(w.Writer)
-	}
-
-	// Package references
-	ctxt.Header.Offsets[goobj2.BlkPkgIdx] = w.Offset()
-	for _, pkg := range ctxt.Packages {
-		w.StringRef(pkg)
-	}
-
-	// DWARF file table
-	ctxt.Header.Offsets[goobj2.BlkDwarfFile] = w.Offset()
-	for _, f := range ctxt.DWARFFileList {
-		w.StringRef(filepath.ToSlash(f))
-	}
-
-	// Symbol definitions
-	ctxt.Header.Offsets[goobj2.BlkSymdef] = w.Offset()
-	for _, s := range ctxt.SymDefs {
-		w.Sym(s)
-	}
-
-	// Non-pkg symbol definitions
-	ctxt.Header.Offsets[goobj2.BlkNonpkgdef] = w.Offset()
-	for _, s := range ctxt.NonPkgSymDefs {
-		w.Sym(s)
-	}
-
-	// Non-pkg symbol references
-	ctxt.Header.Offsets[goobj2.BlkNonpkgref] = w.Offset()
-	for _, s := range ctxt.NonPkgSymRefs {
-		w.Sym(s)
-	}
-
-	// Reloc indexes
-	ctxt.Header.Offsets[goobj2.BlkRelocIdx] = w.Offset()
-	nreloc := uint32(0)
-	lists := [][]*Sym{ctxt.SymDefs, ctxt.NonPkgSymDefs}
-	for _, list := range lists {
-		for _, s := range list {
-			w.Uint32(nreloc)
-			nreloc += uint32(len(s.Reloc))
+		if ctxt.isCompilerObj {
+			continue
 		}
-	}
-	w.Uint32(nreloc)
 
-	// Symbol Info indexes
-	ctxt.Header.Offsets[goobj2.BlkAuxIdx] = w.Offset()
-	naux := uint32(0)
-	for _, list := range lists {
-		for _, s := range list {
-			w.Uint32(naux)
-			naux += uint32(nAuxSym(s))
+		genFuncInfoSyms(ctxt)
+
+		w := writer{
+			Writer: goobj2.NewWriter(b),
+			ctxt:   ctxt,
 		}
-	}
-	w.Uint32(naux)
 
-	// Data indexes
-	ctxt.Header.Offsets[goobj2.BlkDataIdx] = w.Offset()
-	dataOff := uint32(0)
-	for _, list := range lists {
-		for _, s := range list {
-			w.Uint32(dataOff)
-			dataOff += uint32(len(s.Data))
+		start := b.Offset()
+
+		// Header
+		// We just reserve the space. We'll fill in the offsets later.
+		ctxt.ObjHeader.Write(w.Writer)
+
+		// String table
+		w.StringTable()
+
+		// Autolib
+		ctxt.ObjHeader.Offsets[goobj2.BlkAutolib] = w.Offset()
+		for i := range ctxt.Imports {
+			ctxt.Imports[i].Write(w.Writer)
 		}
-	}
-	w.Uint32(dataOff)
 
-	// Relocs
-	ctxt.Header.Offsets[goobj2.BlkReloc] = w.Offset()
-	for _, list := range lists {
-		for _, s := range list {
-			for i := range s.Reloc {
-				w.Reloc(&s.Reloc[i])
+		// Package references
+		ctxt.ObjHeader.Offsets[goobj2.BlkPkgIdx] = w.Offset()
+		w.StringRef("")
+		for _, pkg := range ctxt.Packages {
+			w.StringRef(pkg)
+		}
+
+		// DWARF file table
+		ctxt.ObjHeader.Offsets[goobj2.BlkDwarfFile] = w.Offset()
+		for _, f := range ctxt.DWARFFileList {
+			w.StringRef(filepath.ToSlash(f))
+		}
+
+		// Symbol definitions
+		ctxt.ObjHeader.Offsets[goobj2.BlkSymdef] = w.Offset()
+		for _, s := range ctxt.SymDefs {
+			w.Sym(s)
+		}
+
+		// Non-pkg symbol definitions
+		ctxt.ObjHeader.Offsets[goobj2.BlkNonpkgdef] = w.Offset()
+		for _, s := range ctxt.NonPkgSymDefs {
+			w.Sym(s)
+		}
+
+		// Non-pkg symbol references
+		ctxt.ObjHeader.Offsets[goobj2.BlkNonpkgref] = w.Offset()
+		for _, s := range ctxt.NonPkgSymRefs {
+			w.Sym(s)
+		}
+
+		// Reloc indexes
+		ctxt.ObjHeader.Offsets[goobj2.BlkRelocIdx] = w.Offset()
+		nreloc := uint32(0)
+		lists := [][]*Sym{ctxt.SymDefs, ctxt.NonPkgSymDefs}
+		for _, list := range lists {
+			for _, s := range list {
+				w.Uint32(nreloc)
+				nreloc += uint32(len(s.Reloc))
 			}
 		}
-	}
+		w.Uint32(nreloc)
 
-	// Aux symbol info
-	ctxt.Header.Offsets[goobj2.BlkAux] = w.Offset()
-	for _, list := range lists {
-		for _, s := range list {
-			w.Aux(s)
+		// Symbol Info indexes
+		ctxt.ObjHeader.Offsets[goobj2.BlkAuxIdx] = w.Offset()
+		naux := uint32(0)
+		for _, list := range lists {
+			for _, s := range list {
+				w.Uint32(naux)
+				naux += uint32(nAuxSym(s))
+			}
 		}
-	}
+		w.Uint32(naux)
 
-	// Data
-	ctxt.Header.Offsets[goobj2.BlkData] = w.Offset()
-	for _, list := range lists {
-		for _, s := range list {
-			w.Bytes(s.Data)
+		// Data indexes
+		ctxt.ObjHeader.Offsets[goobj2.BlkDataIdx] = w.Offset()
+		dataOff := uint32(0)
+		for _, list := range lists {
+			for _, s := range list {
+				w.Uint32(dataOff)
+				dataOff += uint32(len(s.Data))
+			}
 		}
-	}
+		w.Uint32(dataOff)
 
-	// Pcdata
-	ctxt.Header.Offsets[goobj2.BlkPcdata] = w.Offset()
-	for _, ts := range ctxt.textSyms {
-		w.Bytes(ts.sym.Func.PCSP)
-		w.Bytes(ts.sym.Func.PCFile)
-		w.Bytes(ts.sym.Func.PCLine)
-		w.Bytes(ts.sym.Func.PCInline)
-		for i := range ts.sym.Func.PCData {
-			w.Bytes(ts.sym.Func.PCData[i])
+		// Relocs
+		ctxt.ObjHeader.Offsets[goobj2.BlkReloc] = w.Offset()
+		for _, list := range lists {
+			for _, s := range list {
+				for i := range s.Reloc {
+					w.Reloc(&s.Reloc[i])
+				}
+			}
 		}
+
+		// Aux symbol info
+		ctxt.ObjHeader.Offsets[goobj2.BlkAux] = w.Offset()
+		for _, list := range lists {
+			for _, s := range list {
+				w.Aux(s)
+			}
+		}
+
+		// Data
+		ctxt.ObjHeader.Offsets[goobj2.BlkData] = w.Offset()
+		for _, list := range lists {
+			for _, s := range list {
+				w.Bytes(s.Data)
+			}
+		}
+
+		// Pcdata
+		ctxt.ObjHeader.Offsets[goobj2.BlkPcdata] = w.Offset()
+		for _, ts := range ctxt.textSyms {
+			w.Bytes(ts.sym.Func.PCSP)
+			w.Bytes(ts.sym.Func.PCFile)
+			w.Bytes(ts.sym.Func.PCLine)
+			w.Bytes(ts.sym.Func.PCInline)
+			for i := range ts.sym.Func.PCData {
+				w.Bytes(ts.sym.Func.PCData[i])
+			}
+		}
+
+		// Blocks used only by tools (objdump, nm).
+
+		// Referenced symbol names from other packages
+		// TODO: will be different due to strings in different order
+		ctxt.ObjHeader.Offsets[goobj2.BlkRefName] = w.Offset()
+		for _, ref := range ctxt.SymRefs {
+			var o goobj2.RefName
+			o.SetSym(ref.SymRef)
+			o.SetName(ref.Name, w.Writer)
+			o.Write(w.Writer)
+		}
+
+		objEnd := w.Offset()
+		ctxt.ObjHeader.Offsets[goobj2.BlkEnd] = objEnd
+
+		// If the object size is odd, make it even by adding an
+		// extra null byte as padding
+		size := int64(objEnd) + (start - curObjStartOff)
+		if size%2 != 0 {
+			b.WriteByte(0x00)
+		}
+
+		// Fix size field of the last archive header
+		b.MustSeek(curArHdrOff+48, 0)
+		b.WriteString(fmt.Sprintf("%-10d", size))
+
+		// Fix up block offsets in the object header
+		end := start + int64(w.Offset())
+		b.MustSeek(start, 0)
+		ctxt.ObjHeader.Write(w.Writer)
+		b.MustSeek(end, 0)
 	}
-
-	// Blocks used only by tools (objdump, nm).
-
-	// Referenced symbol names from other packages
-	// TODO: will be different due to strings in different order
-	ctxt.Header.Offsets[goobj2.BlkRefName] = w.Offset()
-	for _, ref := range ctxt.SymRefs {
-		var o goobj2.RefName
-		o.SetSym(ref.SymRef)
-		o.SetName(ref.Name, w.Writer)
-		o.Write(w.Writer)
-	}
-
-	objEnd := w.Offset()
-	ctxt.Header.Offsets[goobj2.BlkEnd] = objEnd
-
-	// If the object size is odd, make it even by adding an
-	// extra null byte as padding
-	size := int64(objEnd) + (start - lastObjDataOff)
-	if size%2 != 0 {
-		b.WriteByte(0x00)
-	}
-
-	// Fix size field of the last archive header
-	b.MustSeek(lastArHdrOff+48, 0)
-	b.WriteString(fmt.Sprintf("%-10d", size))
-
-	// Fix up block offsets in the object header
-	end := start + int64(w.Offset())
-	b.MustSeek(start, 0)
-	ctxt.Header.Write(w.Writer)
-	b.MustSeek(end, 0)
 
 	return nil
 }
 
 type writer struct {
 	*goobj2.Writer
-	ctxt *Package
+	ctxt *ArchiveMember
 }
 
 func (w *writer) StringTable() {
@@ -357,7 +359,7 @@ func nAuxSym(s *Sym) int {
 }
 
 // generate symbols for FuncInfo.
-func genFuncInfoSyms(ctxt *Package) {
+func genFuncInfoSyms(ctxt *ArchiveMember) {
 	var pcdataoff uint32
 	var b bytes.Buffer
 	for _, textSym := range ctxt.textSyms {

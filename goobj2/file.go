@@ -34,23 +34,13 @@ const (
 
 // A Package is a parsed Go object file or archive defining a Go package.
 type Package struct {
-	ArchiveHeaders []ArchiveHeader
-	Header         goobj2.Header
+	ArchiveMembers []ArchiveMember
 	ImportPath     string
-	Imports        []goobj2.ImportedPkg // packages imported by this package
-	Packages       []string
-	DWARFFileList  []string // List of files for the DWARF .debug_lines section
-	SymDefs        []*Sym
-	NonPkgSymDefs  []*Sym
-	NonPkgSymRefs  []*Sym
-	SymRefs        []SymRef
-	os             string
-	arch           string
 
-	textSyms textSyms
-	initSym  specialSym
+	os   string
+	arch string
 
-	symMap map[int]*Sym
+	//symMap map[int]*Sym
 }
 
 func (p Package) OS() string {
@@ -59,6 +49,25 @@ func (p Package) OS() string {
 
 func (p Package) Arch() string {
 	return p.arch
+}
+
+type ArchiveMember struct {
+	ArchiveHeader ArchiveHeader
+	ObjHeader     goobj2.Header
+	Imports       []goobj2.ImportedPkg
+	Packages      []string
+	DWARFFileList []string
+	SymDefs       []*Sym
+	NonPkgSymDefs []*Sym
+	NonPkgSymRefs []*Sym
+	SymRefs       []SymRef
+
+	textSyms textSyms
+	initSym  specialSym
+
+	symMap map[int]*Sym
+
+	isCompilerObj bool
 }
 
 type ArchiveHeader struct {
@@ -398,7 +407,6 @@ func (r *objReader) skip(n int64) {
 // assuming that its import path is pkgpath.
 func Parse(objPath, pkgPath string, importCfg ImportCfg) (*Package, error) {
 	p := new(Package)
-	p.symMap = make(map[int]*Sym)
 	p.ImportPath = pkgPath
 
 	if _, err := parse(objPath, p, importCfg, false); err != nil {
@@ -439,10 +447,12 @@ func parse(objPath string, p *Package, importCfg ImportCfg, returnReader bool) (
 			return nil, err
 		}
 	case bytes.Equal(rd.tmp[:8], goobjHeader):
-		rr, _, err = rd.parseObject(goobjHeader, importCfg, returnReader)
+		var am *ArchiveMember
+		rr, am, _, err = rd.parseObject(goobjHeader, importCfg, returnReader)
 		if err != nil {
 			return nil, err
 		}
+		p.ArchiveMembers = append(p.ArchiveMembers, *am)
 	}
 
 	return rr, nil
@@ -502,6 +512,7 @@ func (r *objReader) parseArchive(importCfg ImportCfg, returnReader bool) (*goobj
 		}
 		ar.Size = size
 
+		var am *ArchiveMember
 		switch ar.Name {
 		case "__.PKGDEF":
 			ar.Data = make([]byte, size)
@@ -512,6 +523,9 @@ func (r *objReader) parseArchive(importCfg ImportCfg, returnReader bool) (*goobj
 				ar.Data = append(ar.Data, 0x00)
 			}
 
+			am = new(ArchiveMember)
+			am.ArchiveHeader = ar
+			am.isCompilerObj = true
 		default:
 			oldLimit := r.limit
 			r.limit = r.offset + size
@@ -521,7 +535,8 @@ func (r *objReader) parseArchive(importCfg ImportCfg, returnReader bool) (*goobj
 				return nil, err
 			}
 			if bytes.Equal(p, goobjHeader) {
-				rr, data, err := r.parseObject(nil, importCfg, returnReader)
+				var rr *goobj2.Reader
+				rr, am, data, err = r.parseObject(nil, importCfg, returnReader)
 				if err != nil {
 					return nil, fmt.Errorf("parsing archive member %q: %v", ar.Name, err)
 				}
@@ -529,6 +544,7 @@ func (r *objReader) parseArchive(importCfg ImportCfg, returnReader bool) (*goobj
 					return rr, nil
 				}
 				ar.Data = data
+				am.ArchiveHeader = ar
 			}
 
 			r.skip(r.limit - r.offset)
@@ -538,8 +554,8 @@ func (r *objReader) parseArchive(importCfg ImportCfg, returnReader bool) (*goobj
 			r.skip(1)
 		}
 
-		if r.p != nil {
-			r.p.ArchiveHeaders = append(r.p.ArchiveHeaders, ar)
+		if r.p != nil && am != nil {
+			r.p.ArchiveMembers = append(r.p.ArchiveMembers, *am)
 		}
 	}
 
@@ -553,7 +569,7 @@ func (r *objReader) parseArchive(importCfg ImportCfg, returnReader bool) (*goobj
 // and then the part we want to parse begins.
 // The format of that part is defined in a comment at the top
 // of src/liblink/objfile.c.
-func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader bool) (*goobj2.Reader, []byte, error) {
+func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader bool) (*goobj2.Reader, *ArchiveMember, []byte, error) {
 	h := make([]byte, 0, 256)
 	h = append(h, prefix...)
 	var c1, c2, c3 byte
@@ -563,7 +579,7 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 		// The new export format can contain 0 bytes.
 		// Don't consider them errors, only look for r.err != nil.
 		if r.err != nil {
-			return nil, nil, errCorruptObject
+			return nil, nil, nil, errCorruptObject
 		}
 		if c1 == '\n' && c2 == '!' && c3 == '\n' {
 			break
@@ -571,17 +587,21 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 	}
 
 	hs := strings.Fields(string(h))
-	if len(hs) >= 4 && !returnReader {
+	if len(hs) >= 4 && r.p != nil {
 		r.p.os = hs[2]
 		r.p.arch = hs[3]
+	}
+	var isAsmObj bool
+	if len(hs) == 6 {
+		isAsmObj = true
 	}
 
 	p, err := r.peek(8)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if !bytes.Equal(p, []byte(goobj2.Magic)) {
-		return nil, nil, errNotObject
+		return nil, nil, nil, errNotObject
 	}
 
 	r.objStart = r.offset
@@ -590,38 +610,42 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 	r.readFull(objbytes)
 	rr := goobj2.NewReaderFromBytes(objbytes, false)
 	if rr == nil {
-		return nil, nil, errCorruptObject
+		return nil, nil, nil, errCorruptObject
 	}
 	if returnReader {
-		return rr, nil, nil
+		return rr, nil, nil, nil
 	}
 
+	var am ArchiveMember
+	am.symMap = make(map[int]*Sym)
+
 	// Header
-	r.p.Header = rr.Header()
+	am.ObjHeader = rr.Header()
 
 	// Imports
 	for _, p := range rr.Autolib() {
-		r.p.Imports = append(r.p.Imports, p)
+		am.Imports = append(am.Imports, p)
 	}
 
 	// Referenced packages
-	r.p.Packages = rr.Pkglist()
+	am.Packages = rr.Pkglist()
+	am.Packages = am.Packages[1:] // skip first package which is always an empty string
 
 	// Dwarf file table
-	r.p.DWARFFileList = make([]string, rr.NDwarfFile())
-	for i := 0; i < len(r.p.DWARFFileList); i++ {
-		r.p.DWARFFileList[i] = rr.DwarfFile(i)
+	am.DWARFFileList = make([]string, rr.NDwarfFile())
+	for i := 0; i < len(am.DWARFFileList); i++ {
+		am.DWARFFileList[i] = rr.DwarfFile(i)
 	}
 
 	// Name of referenced indexed symbols.
 	nrefName := rr.NRefName()
 	refNames := make(map[goobj2.SymRef]string, nrefName)
-	r.p.SymRefs = make([]SymRef, 0, nrefName)
+	am.SymRefs = make([]SymRef, 0, nrefName)
 	for i := 0; i < nrefName; i++ {
 		rn := rr.RefName(i)
 		sym, name := rn.Sym(), rn.Name(rr)
 		refNames[sym] = name
-		r.p.SymRefs = append(r.p.SymRefs, SymRef{name, sym})
+		am.SymRefs = append(am.SymRefs, SymRef{name, sym})
 	}
 
 	resolveSymRefName := func(s goobj2.SymRef) string {
@@ -663,14 +687,14 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 			Align: osym.Align(),
 		}
 		symDefs[j] = sym
-		r.p.symMap[i] = sym
+		am.symMap[i] = sym
 
 		if i >= ndef {
 			return // not a defined symbol from here
 		}
 
 		if sym.Kind == objabi.STEXT {
-			r.p.textSyms = append(r.p.textSyms, specialSym{sym: sym})
+			am.textSyms = append(am.textSyms, specialSym{sym: sym})
 		}
 
 		// Symbol data
@@ -793,58 +817,58 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 
 	// Symbol definitions
 	nsymDefs := rr.NSym()
-	r.p.SymDefs = make([]*Sym, nsymDefs)
+	am.SymDefs = make([]*Sym, nsymDefs)
 	realInitSymName := initSymName
 	if r.p.ImportPath != "" {
 		realInitSymName = strings.Replace(initSymName, `""`, r.p.ImportPath, 1)
 	}
 	for i := 0; i < nsymDefs; i++ {
-		parseSym(i, i, r.p.SymDefs)
-		if r.p.SymDefs[i].Name == realInitSymName {
-			r.p.initSym = specialSym{sym: r.p.SymDefs[i]}
+		parseSym(i, i, am.SymDefs)
+		if am.SymDefs[i].Name == realInitSymName {
+			am.initSym = specialSym{sym: am.SymDefs[i]}
 		}
 	}
 
 	// Non-pkg symbol definitions
 	nNonPkgDefs := rr.NNonpkgdef()
-	r.p.NonPkgSymDefs = make([]*Sym, nNonPkgDefs)
+	am.NonPkgSymDefs = make([]*Sym, nNonPkgDefs)
 	parsedSyms := nsymDefs
 	for i := 0; i < nNonPkgDefs; i++ {
-		parseSym(i+parsedSyms, i, r.p.NonPkgSymDefs)
+		parseSym(i+parsedSyms, i, am.NonPkgSymDefs)
 	}
 
 	// Non-pkg symbol references
 	nNonPkgRefs := rr.NNonpkgref()
-	r.p.NonPkgSymRefs = make([]*Sym, nNonPkgRefs)
+	am.NonPkgSymRefs = make([]*Sym, nNonPkgRefs)
 	parsedSyms += nNonPkgDefs
 	for i := 0; i < nNonPkgRefs; i++ {
-		parseSym(i+parsedSyms, i, r.p.NonPkgSymRefs)
+		parseSym(i+parsedSyms, i, am.NonPkgSymRefs)
 	}
 
 	// Symbol references were already parsed above
 
 	// Sort text symbols
-	if err := r.configureSpecialSyms(objbytes); err != nil {
-		return nil, nil, err
+	if err := r.configureSpecialSyms(objbytes, &am, isAsmObj); err != nil {
+		return nil, nil, nil, err
 	}
-	sort.Sort(r.p.textSyms)
+	sort.Sort(am.textSyms)
 
 	// Resolve missing inlined function names
 	if len(inlFuncsToResolve) == 0 {
-		return nil, h, nil
+		return nil, &am, h, nil
 	}
 
-	objReaders := make([]*goobj2.Reader, len(r.p.Packages)-1)
+	objReaders := make([]*goobj2.Reader, len(am.Packages))
 	for _, inl := range inlFuncsToResolve {
 		if pkgIdx := inl.Func.PkgIdx; objReaders[pkgIdx-1] == nil {
-			pkgName := r.p.Packages[pkgIdx]
+			pkgName := am.Packages[pkgIdx-1]
 			archivePath, err := getArchivePath(pkgName, importMap)
 			if err != nil {
-				return nil, nil, fmt.Errorf("error resolving path of archive: %v", err)
+				return nil, nil, nil, fmt.Errorf("error resolving path of archive: %v", err)
 			}
 			rr, err := parse(archivePath, nil, nil, true)
 			if err != nil {
-				return nil, nil, fmt.Errorf("error parsing stdlib archive: %v", err)
+				return nil, nil, nil, fmt.Errorf("error parsing stdlib archive: %v", err)
 			}
 			objReaders[pkgIdx-1] = rr
 		}
@@ -853,7 +877,7 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 		inl.Func.Name = rr.Sym(int(inl.Func.SymIdx)).Name(rr)
 	}
 
-	return nil, h, nil
+	return nil, &am, h, nil
 }
 
 func getArchivePath(pkg string, importMap ImportCfg) (string, error) {
@@ -874,16 +898,19 @@ func getArchivePath(pkg string, importMap ImportCfg) (string, error) {
 	return strings.TrimSpace(string(path)), nil
 }
 
-func (r *objReader) configureSpecialSyms(objBytes []byte) error {
-	stringTable := objBytes[objHeaderLen:r.p.Header.Offsets[goobj2.BlkAutolib]]
+func (r *objReader) configureSpecialSyms(objBytes []byte, am *ArchiveMember, isAsmObj bool) error {
+	stringTable := objBytes[objHeaderLen:am.ObjHeader.Offsets[goobj2.BlkAutolib]]
 
 	pkgName := `""`
 	if r.p.ImportPath != "" {
 		pkgName = r.p.ImportPath
 	}
-	prefixes := []string{"go.info.", "go.string.", "type.", "runtime.", "gclocals·", "go.itablink.", "go.itab.", "gofile..", "go.interface", "go.builtin.", "go.cuinfo.packagename.", "internal/", pkgName + "."}
-	for _, pkg := range r.p.Packages {
+	prefixes := []string{"go.info.", "go.string.", "type.", "runtime.", "gclocals·", "go.itablink.", "go.itab.", "go.interface.", "go.constinfo.", "gofile..", "go.builtin.", "internal/", "go.cuinfo.packagename.", pkgName + "."} // TODO: only add last element if obj is ASM obj
+	for _, pkg := range am.Packages {
 		prefixes = append(prefixes, pkg+".")
+	}
+	if isAsmObj {
+		prefixes = append(prefixes, `"".`)
 	}
 
 	strTableOff := func(symName string) int {
@@ -909,23 +936,26 @@ func (r *objReader) configureSpecialSyms(objBytes []byte) error {
 	// sort the symbols in the TEXT region by when their name appears in the
 	// string table.
 	// TODO: find better way to order/sort text syms
-	for i, textSym := range r.p.textSyms {
+	for i, textSym := range am.textSyms {
 		off := strTableOff(textSym.sym.Name)
 		if off == -1 {
 			return fmt.Errorf("symbol not found in string table: %s", textSym.sym.Name)
 		}
 
-		r.p.textSyms[i].strOff = uint32(off) + objHeaderLen
+		am.textSyms[i].strOff = uint32(off) + objHeaderLen
+		if isAsmObj {
+			prefixes = append(prefixes, textSym.sym.Name)
+		}
 	}
 
 	// find the offset in the string table of the init symbol.
 	// TODO: find better way to know when to write init symbol
-	if r.p.initSym.sym != nil {
-		off := strTableOff(r.p.initSym.sym.Name)
+	if am.initSym.sym != nil {
+		off := strTableOff(am.initSym.sym.Name)
 		if off == -1 {
-			return fmt.Errorf("symbol not found in string table: %s", r.p.initSym.sym.Name)
+			return fmt.Errorf("symbol not found in string table: %s", am.initSym.sym.Name)
 		}
-		r.p.initSym.strOff = uint32(off) + objHeaderLen
+		am.initSym.strOff = uint32(off) + objHeaderLen
 	}
 
 	return nil
@@ -937,12 +967,6 @@ func isEndOfStr(stringTable []byte, prefixes []string) bool {
 		return false
 	}
 
-	// check if there's some weird character at the end of a string.
-	// If there is, the string is not finished. ex 'runtime.nilinterequalÂ·f'
-	if !isSymChar(stringTable[0]) {
-		return false
-	}
-
 	for _, prefix := range prefixes {
 		if string(stringTable[:len(prefix)]) == prefix {
 			return true
@@ -950,12 +974,4 @@ func isEndOfStr(stringTable []byte, prefixes []string) bool {
 	}
 
 	return false
-}
-
-func isSymChar(c byte) bool {
-	return (c >= 40 && c <= 42) || // '(', ')', '*'
-		(c >= 47 && c <= 57) || // '/' and 0..9
-		(c >= 65 && c <= 90) || // A..Z
-		c == 91 || c == 93 || c == 95 || // '[', ']', '_'
-		(c >= 97 && c <= 122) // a..z
 }
