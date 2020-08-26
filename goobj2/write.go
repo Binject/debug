@@ -159,19 +159,16 @@ func WriteObjFile2(pkg *Package, objPath string) error {
 		// Pcdata
 		ctxt.ObjHeader.Offsets[goobj2.BlkPcdata] = w.Offset()
 		for _, ts := range ctxt.textSyms {
-			w.Bytes(ts.sym.Func.PCSP)
-			w.Bytes(ts.sym.Func.PCFile)
-			w.Bytes(ts.sym.Func.PCLine)
-			w.Bytes(ts.sym.Func.PCInline)
-			for i := range ts.sym.Func.PCData {
-				w.Bytes(ts.sym.Func.PCData[i])
+			w.Bytes(ts.Func.PCSP)
+			w.Bytes(ts.Func.PCFile)
+			w.Bytes(ts.Func.PCLine)
+			w.Bytes(ts.Func.PCInline)
+			for i := range ts.Func.PCData {
+				w.Bytes(ts.Func.PCData[i])
 			}
 		}
 
-		// Blocks used only by tools (objdump, nm).
-
 		// Referenced symbol names from other packages
-		// TODO: will be different due to strings in different order
 		ctxt.ObjHeader.Offsets[goobj2.BlkRefName] = w.Offset()
 		for _, ref := range ctxt.SymRefs {
 			var o goobj2.RefName
@@ -186,8 +183,10 @@ func WriteObjFile2(pkg *Package, objPath string) error {
 		// If the object size is odd, make it even by adding an
 		// extra null byte as padding
 		size := int64(objEnd) + (start - curObjStartOff)
+		end := start + int64(w.Offset())
 		if size%2 != 0 {
 			b.WriteByte(0x00)
+			end++
 		}
 
 		// Fix size field of the last archive header
@@ -195,7 +194,6 @@ func WriteObjFile2(pkg *Package, objPath string) error {
 		b.WriteString(fmt.Sprintf("%-10d", size))
 
 		// Fix up block offsets in the object header
-		end := start + int64(w.Offset())
 		b.MustSeek(start, 0)
 		ctxt.ObjHeader.Write(w.Writer)
 		b.MustSeek(end, 0)
@@ -251,15 +249,14 @@ func (w *writer) StringTable() {
 
 	// Symbols of type STEXT (that have functions) are written first
 	for _, ts := range w.ctxt.textSyms {
-		writeSymStrings(ts.sym)
+		writeSymStrings(ts)
 	}
 
-	// TODO: optimize by not writing symbols twice
 	syms := [][]*Sym{w.ctxt.NonPkgSymDefs, w.ctxt.SymDefs, w.ctxt.NonPkgSymRefs}
 	for _, list := range syms {
 		for _, s := range list {
-			if w.ctxt.initSym.sym != nil && w.Offset() == w.ctxt.initSym.strOff {
-				writeSymStrings(w.ctxt.initSym.sym)
+			if s.Kind == objabi.STEXT {
+				continue
 			}
 
 			writeSymStrings(s)
@@ -362,8 +359,7 @@ func nAuxSym(s *Sym) int {
 func genFuncInfoSyms(ctxt *ArchiveMember) {
 	var pcdataoff uint32
 	var b bytes.Buffer
-	for _, textSym := range ctxt.textSyms {
-		s := textSym.sym
+	for _, s := range ctxt.textSyms {
 		if s.Func == nil {
 			continue
 		}

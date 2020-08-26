@@ -18,7 +18,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -39,8 +38,6 @@ type Package struct {
 
 	os   string
 	arch string
-
-	//symMap map[int]*Sym
 }
 
 func (p Package) OS() string {
@@ -62,12 +59,15 @@ type ArchiveMember struct {
 	NonPkgSymRefs []*Sym
 	SymRefs       []SymRef
 
-	textSyms textSyms
-	initSym  specialSym
+	textSyms []*Sym
 
 	symMap map[int]*Sym
 
 	isCompilerObj bool
+}
+
+func (a ArchiveMember) IsCompilerObj() bool {
+	return a.isCompilerObj
 }
 
 type ArchiveHeader struct {
@@ -82,17 +82,16 @@ type ArchiveHeader struct {
 
 // A Sym is a named symbol in an object file.
 type Sym struct {
-	Name   string
-	ABI    uint16
-	Kind   objabi.SymKind // kind of symbol
-	Flag   uint8
-	Size   uint32 // size of corresponding data
-	Align  uint32
-	Type   *SymRef // symbol for Go type information
-	Data   []byte  // memory image of symbol
-	Reloc  []Reloc // relocations to apply to Data
-	Func   *Func   // additional data for functions
-	symRef goobj2.SymRef
+	Name  string
+	ABI   uint16
+	Kind  objabi.SymKind // kind of symbol
+	Flag  uint8
+	Size  uint32 // size of corresponding data
+	Align uint32
+	Type  *SymRef // symbol for Go type information
+	Data  []byte  // memory image of symbol
+	Reloc []Reloc // relocations to apply to Data
+	Func  *Func   // additional data for functions
 }
 
 type SymRef struct {
@@ -156,29 +155,6 @@ type InlinedCall struct {
 	Line     int32
 	Func     SymRef
 	ParentPC int32
-}
-
-type textSyms []specialSym
-
-func (t textSyms) Len() int {
-	return len(t)
-}
-
-func (t textSyms) Less(i, j int) bool {
-	return t[i].strOff < t[j].strOff
-}
-
-func (t textSyms) Swap(i, j int) {
-	var temp specialSym
-
-	temp = t[i]
-	t[i] = t[j]
-	t[j] = temp
-}
-
-type specialSym struct {
-	strOff uint32
-	sym    *Sym
 }
 
 type ImportCfg map[string]ExportInfo
@@ -591,10 +567,6 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 		r.p.os = hs[2]
 		r.p.arch = hs[3]
 	}
-	var isAsmObj bool
-	if len(hs) == 6 {
-		isAsmObj = true
-	}
 
 	p, err := r.peek(8)
 	if err != nil {
@@ -694,7 +666,7 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 		}
 
 		if sym.Kind == objabi.STEXT {
-			am.textSyms = append(am.textSyms, specialSym{sym: sym})
+			am.textSyms = append(am.textSyms, sym)
 		}
 
 		// Symbol data
@@ -818,15 +790,8 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 	// Symbol definitions
 	nsymDefs := rr.NSym()
 	am.SymDefs = make([]*Sym, nsymDefs)
-	realInitSymName := initSymName
-	if r.p.ImportPath != "" {
-		realInitSymName = strings.Replace(initSymName, `""`, r.p.ImportPath, 1)
-	}
 	for i := 0; i < nsymDefs; i++ {
 		parseSym(i, i, am.SymDefs)
-		if am.SymDefs[i].Name == realInitSymName {
-			am.initSym = specialSym{sym: am.SymDefs[i]}
-		}
 	}
 
 	// Non-pkg symbol definitions
@@ -846,12 +811,6 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 	}
 
 	// Symbol references were already parsed above
-
-	// Sort text symbols
-	if err := r.configureSpecialSyms(objbytes, &am, isAsmObj); err != nil {
-		return nil, nil, nil, err
-	}
-	sort.Sort(am.textSyms)
 
 	// Resolve missing inlined function names
 	if len(inlFuncsToResolve) == 0 {
@@ -896,82 +855,4 @@ func getArchivePath(pkg string, importMap ImportCfg) (string, error) {
 	}
 
 	return strings.TrimSpace(string(path)), nil
-}
-
-func (r *objReader) configureSpecialSyms(objBytes []byte, am *ArchiveMember, isAsmObj bool) error {
-	stringTable := objBytes[objHeaderLen:am.ObjHeader.Offsets[goobj2.BlkAutolib]]
-
-	pkgName := `""`
-	if r.p.ImportPath != "" {
-		pkgName = r.p.ImportPath
-	}
-	prefixes := []string{"go.info.", "go.string.", "type.", "runtime.", "gclocals·", "go.itablink.", "go.itab.", "go.interface.", "go.constinfo.", "gofile..", "go.builtin.", "internal/", "go.cuinfo.packagename.", pkgName + "."} // TODO: only add last element if obj is ASM obj
-	for _, pkg := range am.Packages {
-		prefixes = append(prefixes, pkg+".")
-	}
-	if isAsmObj {
-		prefixes = append(prefixes, `"".`)
-	}
-
-	strTableOff := func(symName string) int {
-		start := 0
-		for {
-			off := bytes.Index(stringTable[start:], []byte(symName))
-			if off == -1 {
-				return -1
-			}
-
-			// check to make sure the string we found isn't actually
-			// a substring of another symbol's name
-			newStart := start + off + len(symName)
-			if !isEndOfStr(stringTable[newStart:], prefixes) {
-				start = newStart
-				continue
-			}
-
-			return off + start
-		}
-	}
-
-	// sort the symbols in the TEXT region by when their name appears in the
-	// string table.
-	// TODO: find better way to order/sort text syms
-	for i, textSym := range am.textSyms {
-		off := strTableOff(textSym.sym.Name)
-		if off == -1 {
-			return fmt.Errorf("symbol not found in string table: %s", textSym.sym.Name)
-		}
-
-		am.textSyms[i].strOff = uint32(off) + objHeaderLen
-		if isAsmObj {
-			prefixes = append(prefixes, textSym.sym.Name)
-		}
-	}
-
-	// find the offset in the string table of the init symbol.
-	// TODO: find better way to know when to write init symbol
-	if am.initSym.sym != nil {
-		off := strTableOff(am.initSym.sym.Name)
-		if off == -1 {
-			return fmt.Errorf("symbol not found in string table: %s", am.initSym.sym.Name)
-		}
-		am.initSym.strOff = uint32(off) + objHeaderLen
-	}
-
-	return nil
-}
-
-// TODO: detect if inside string
-func isEndOfStr(stringTable []byte, prefixes []string) bool {
-	if stringTable[0] == 46 { // '.'
-		return false
-	}
-
-	for _, prefix := range prefixes {
-		if string(stringTable[:len(prefix)]) == prefix {
-			return true
-		}
-	}
-
-	return false
 }
