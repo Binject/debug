@@ -19,9 +19,9 @@ import (
 	"github.com/Binject/debug/goobj2/internal/objabi"
 )
 
-// Entry point of writing new object file.
-func WriteObjFile2(pkg *Package, objPath string) error {
-	b, err := bio.Create(objPath)
+// Write writes the contents of the parsed archive to disk.
+func (pkg *Package) Write(path string) error {
+	b, err := bio.Create(path)
 	if err != nil {
 		return fmt.Errorf("error creating object file: %v", err)
 	}

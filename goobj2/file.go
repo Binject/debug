@@ -379,8 +379,10 @@ func (r *objReader) skip(n int64) {
 	}
 }
 
-// Parse parses an object file or archive from f,
-// assuming that its import path is pkgpath.
+// Parse parses an object file or archive from f, assuming that its
+// import path is pkgpath. An import configuration file that would
+// be passed into the linker can optionally be passed in as importCfg
+// to optimize looking up paths to dependencies' object files.
 func Parse(objPath, pkgPath string, importCfg ImportCfg) (*Package, error) {
 	p := new(Package)
 	p.ImportPath = pkgPath
