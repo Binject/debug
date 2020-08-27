@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -825,11 +826,11 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 			pkgName := am.Packages[pkgIdx-1]
 			archivePath, err := getArchivePath(pkgName, importMap)
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("error resolving path of archive: %v", err)
+				return nil, nil, nil, fmt.Errorf("error resolving path of objfile %s: %v", pkgName, err)
 			}
 			rr, err := parse(archivePath, nil, nil, true)
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("error parsing stdlib archive: %v", err)
+				return nil, nil, nil, fmt.Errorf("error parsing objfile %s: %v", pkgName, err)
 			}
 			objReaders[pkgIdx-1] = rr
 		}
@@ -841,12 +842,22 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 	return nil, &am, h, nil
 }
 
-func getArchivePath(pkg string, importMap ImportCfg) (string, error) {
+func getArchivePath(pkg string, importMap ImportCfg) (s string, err error) {
 	// try to get the archive path from the importMap first
 	if importMap != nil {
 		path, ok := importMap[pkg]
 		if ok {
 			return path.Path, nil
+		}
+	}
+
+	// for whatever reason, the Go compiler will url-encode
+	// packages paths that have certain symbols in them,
+	// like a period. ex gopkg.in/yaml.v2 => gopkg/in/yaml%2ev2
+	if strings.ContainsRune(pkg, '%') {
+		pkg, err = url.QueryUnescape(pkg)
+		if err != nil {
+			return "", err
 		}
 	}
 
