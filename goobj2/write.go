@@ -39,7 +39,7 @@ func (pkg *Package) Write(path string) error {
 		b.Write(arhdr[:])
 		curObjStartOff = b.Offset()
 		b.Write(ar.Data)
-		if ctxt.isCompilerObj {
+		if ctxt.isCompilerObj || ctxt.isDataObj {
 			continue
 		}
 

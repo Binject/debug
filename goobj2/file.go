@@ -65,10 +65,15 @@ type ArchiveMember struct {
 	symMap map[int]*Sym
 
 	isCompilerObj bool
+	isDataObj     bool
 }
 
 func (a ArchiveMember) IsCompilerObj() bool {
 	return a.isCompilerObj
+}
+
+func (a ArchiveMember) IsDataObj() bool {
+	return a.isDataObj
 }
 
 type ArchiveHeader struct {
@@ -524,6 +529,15 @@ func (r *objReader) parseArchive(importCfg ImportCfg, returnReader bool) (*goobj
 				}
 				ar.Data = data
 				am.ArchiveHeader = ar
+			} else {
+				ar.Data = make([]byte, size)
+				if err := r.readFull(ar.Data); err != nil {
+					return nil, err
+				}
+				if fsize != size {
+					ar.Data = append(ar.Data, 0x00)
+				}
+				am = &ArchiveMember{ArchiveHeader: ar, isDataObj: true}
 			}
 
 			r.skip(r.limit - r.offset)
