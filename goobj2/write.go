@@ -20,11 +20,17 @@ import (
 )
 
 // Write writes the contents of the parsed archive to disk.
-func (pkg *Package) Write(path string) error {
+func (pkg *Package) Write(path string) (err error) {
 	b, err := bio.Create(path)
 	if err != nil {
 		return fmt.Errorf("error creating object file: %v", err)
 	}
+	defer func() {
+		closeErr := b.Close()
+		if closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
 	// Archive headers
 	b.Write(archiveHeader)

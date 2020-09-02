@@ -407,7 +407,7 @@ func parse(objPath string, p *Package, importCfg ImportCfg, returnReader bool) (
 	}
 	defer func() {
 		closeErr := f.Close()
-		if err != nil && closeErr != nil {
+		if closeErr != nil && err == nil {
 			err = closeErr
 		}
 	}()
