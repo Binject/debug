@@ -90,7 +90,7 @@ type ArchiveHeader struct {
 type Sym struct {
 	Name  string
 	ABI   uint16
-	Kind  objabi.SymKind // kind of symbol
+	Kind  SymKind // kind of symbol
 	Flag  uint8
 	Size  uint32 // size of corresponding data
 	Align uint32
@@ -145,8 +145,6 @@ type Func struct {
 	dataSymIdx int
 }
 
-// TODO: Add PCData []byte and PCDataIter (similar to liblink).
-
 // A FuncData is a single function-specific data value.
 type FuncData struct {
 	Sym    *SymRef // symbol holding data
@@ -162,6 +160,44 @@ type InlinedCall struct {
 	Func     SymRef
 	ParentPC int32
 }
+
+// A SymKind describes the kind of memory represented by a symbol.
+type SymKind uint8
+
+// Defined SymKind values.
+// Copied from cmd/internal/objabi
+const (
+	// An otherwise invalid zero value for the type
+	Sxxx SymKind = iota
+	// Executable instructions
+	STEXT
+	// Read only static data
+	SRODATA
+	// Static data that does not contain any pointers
+	SNOPTRDATA
+	// Static data
+	SDATA
+	// Statically data that is initially all 0s
+	SBSS
+	// Statically data that is initially all 0s and does not contain pointers
+	SNOPTRBSS
+	// Thread-local data that is initially all 0s
+	STLSBSS
+	// Debugging data
+	SDWARFINFO
+	SDWARFRANGE
+	SDWARFLOC
+	SDWARFLINES
+	// ABI alias. An ABI alias symbol is an empty symbol with a
+	// single relocation with 0 size that references the native
+	// function implementation symbol.
+	//
+	// TODO(austin): Remove this and all uses once the compiler
+	// generates real ABI wrappers rather than symbol aliases.
+	SABIALIAS
+	// Coverage instrumentation counter for libfuzzer.
+	SLIBFUZZER_EXTRA_COUNTER
+)
 
 type ImportCfg map[string]ExportInfo
 
@@ -670,7 +706,7 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 		sym := &Sym{
 			Name:  osym.Name(rr),
 			ABI:   osym.ABI(),
-			Kind:  objabi.SymKind(osym.Type()),
+			Kind:  SymKind(osym.Type()),
 			Flag:  osym.Flag(),
 			Size:  osym.Siz(),
 			Align: osym.Align(),
@@ -682,7 +718,7 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 			return // not a defined symbol from here
 		}
 
-		if sym.Kind == objabi.STEXT {
+		if sym.Kind == STEXT {
 			am.textSyms = append(am.textSyms, sym)
 		}
 

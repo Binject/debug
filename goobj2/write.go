@@ -16,7 +16,6 @@ import (
 
 	"github.com/Binject/debug/goobj2/internal/bio"
 	"github.com/Binject/debug/goobj2/internal/goobj2"
-	"github.com/Binject/debug/goobj2/internal/objabi"
 )
 
 // Write writes the contents of the parsed archive to disk.
@@ -232,7 +231,7 @@ func (w *writer) StringTable() {
 			w.AddString(s.Name)
 		}
 
-		if s.Kind == objabi.STEXT && s.Func != nil {
+		if s.Kind == STEXT && s.Func != nil {
 			for _, d := range s.Func.FuncData {
 				w.AddString(d.Sym.Name)
 			}
@@ -261,7 +260,7 @@ func (w *writer) StringTable() {
 	syms := [][]*Sym{w.ctxt.NonPkgSymDefs, w.ctxt.SymDefs, w.ctxt.NonPkgSymRefs}
 	for _, list := range syms {
 		for _, s := range list {
-			if s.Kind == objabi.STEXT {
+			if s.Kind == STEXT {
 				continue
 			}
 
