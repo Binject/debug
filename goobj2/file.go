@@ -27,9 +27,9 @@ import (
 )
 
 const (
+	CompilerObjName = "__.PKGDEF"
+
 	archiveHeaderLen = 60
-	initSymName      = `""..inittask`
-	objHeaderLen     = 80
 )
 
 // A Package is a parsed Go object file or archive defining a Go package.
@@ -60,20 +60,15 @@ type ArchiveMember struct {
 	NonPkgSymRefs []*Sym
 	SymRefs       []SymRef
 
+	IsDataObj bool
+
 	textSyms []*Sym
 
 	symMap map[int]*Sym
-
-	isCompilerObj bool
-	isDataObj     bool
 }
 
 func (a ArchiveMember) IsCompilerObj() bool {
-	return a.isCompilerObj
-}
-
-func (a ArchiveMember) IsDataObj() bool {
-	return a.isDataObj
+	return a.ArchiveHeader.Name == CompilerObjName
 }
 
 type ArchiveHeader struct {
@@ -534,7 +529,7 @@ func (r *objReader) parseArchive(importCfg ImportCfg, returnReader bool) (*goobj
 
 		var am *ArchiveMember
 		switch ar.Name {
-		case "__.PKGDEF":
+		case CompilerObjName:
 			ar.Data = make([]byte, size)
 			if err := r.readFull(ar.Data); err != nil {
 				return nil, err
@@ -545,7 +540,7 @@ func (r *objReader) parseArchive(importCfg ImportCfg, returnReader bool) (*goobj
 
 			am = new(ArchiveMember)
 			am.ArchiveHeader = ar
-			am.isCompilerObj = true
+			am.IsDataObj = true
 		default:
 			oldLimit := r.limit
 			r.limit = r.offset + size
@@ -573,7 +568,7 @@ func (r *objReader) parseArchive(importCfg ImportCfg, returnReader bool) (*goobj
 				if fsize != size {
 					ar.Data = append(ar.Data, 0x00)
 				}
-				am = &ArchiveMember{ArchiveHeader: ar, isDataObj: true}
+				am = &ArchiveMember{ArchiveHeader: ar, IsDataObj: true}
 			}
 
 			r.skip(r.limit - r.offset)
