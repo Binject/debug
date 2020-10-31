@@ -137,6 +137,30 @@ func newFileInternal(r io.ReaderAt, memoryMode bool) (*File, error) {
 
 	var err error
 
+	if memoryMode {
+		//get strings table location - offset is wrong in the header because we are in memory mode. Can we fix it? Yes we can!
+		restore, err := sr.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return nil, fmt.Errorf("Had a bad time getting restore point: ", err)
+		}
+		//seek to table start (skip the headers)
+		sr.Seek(peHeaderOffset+int64(binary.Size(f.FileHeader))+int64(f.FileHeader.SizeOfOptionalHeader), seekStart)
+
+		//iterate through the sections to find the raw offset value that matches the original symbol table value
+		for i := 0; i < int(f.FileHeader.NumberOfSections); i++ {
+			sh := new(SectionHeader32)
+			if err := binary.Read(sr, binary.LittleEndian, sh); err != nil {
+				return nil, err
+			}
+			//original offset matches the pointer to the symbol table, update the header so other things can reference it good again
+			if sh.PointerToRawData == f.FileHeader.PointerToSymbolTable {
+				f.FileHeader.PointerToSymbolTable = sh.VirtualAddress
+			}
+		}
+		sr.Seek(restore, seekStart)
+
+	}
+
 	// Read string table.
 	f.StringTable, err = readStringTable(&f.FileHeader, sr)
 	if err != nil {
