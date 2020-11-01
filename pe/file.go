@@ -17,7 +17,10 @@ import (
 )
 
 // Avoid use of post-Go 1.4 io features, to make safe for toolchain bootstrap.
-const seekStart = 0
+const (
+	seekStart   = 0
+	seekCurrent = 1
+)
 
 // A File represents an open PE file.
 type File struct {
@@ -139,7 +142,7 @@ func newFileInternal(r io.ReaderAt, memoryMode bool) (*File, error) {
 
 	if memoryMode {
 		//get strings table location - offset is wrong in the header because we are in memory mode. Can we fix it? Yes we can!
-		restore, err := sr.Seek(0, io.SeekCurrent)
+		restore, err := sr.Seek(0, seekCurrent)
 		if err != nil {
 			return nil, fmt.Errorf("Had a bad time getting restore point: ", err)
 		}
@@ -157,8 +160,8 @@ func newFileInternal(r io.ReaderAt, memoryMode bool) (*File, error) {
 				f.FileHeader.PointerToSymbolTable = sh.VirtualAddress
 			}
 		}
+		//restore the original location of sr (this shouldn't actually be required, but just in case)
 		sr.Seek(restore, seekStart)
-
 	}
 
 	// Read string table.
