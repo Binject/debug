@@ -17,7 +17,10 @@ import (
 )
 
 // Avoid use of post-Go 1.4 io features, to make safe for toolchain bootstrap.
-const seekStart = 0
+const (
+	seekStart   = 0
+	seekCurrent = 1
+)
 
 // A File represents an open PE file.
 type File struct {
@@ -136,6 +139,30 @@ func newFileInternal(r io.ReaderAt, memoryMode bool) (*File, error) {
 	}
 
 	var err error
+
+	if memoryMode {
+		//get strings table location - offset is wrong in the header because we are in memory mode. Can we fix it? Yes we can!
+		restore, err := sr.Seek(0, seekCurrent)
+		if err != nil {
+			return nil, fmt.Errorf("Had a bad time getting restore point: ", err)
+		}
+		//seek to table start (skip the headers)
+		sr.Seek(peHeaderOffset+int64(binary.Size(f.FileHeader))+int64(f.FileHeader.SizeOfOptionalHeader), seekStart)
+
+		//iterate through the sections to find the raw offset value that matches the original symbol table value
+		for i := 0; i < int(f.FileHeader.NumberOfSections); i++ {
+			sh := new(SectionHeader32)
+			if err := binary.Read(sr, binary.LittleEndian, sh); err != nil {
+				return nil, err
+			}
+			//original offset matches the pointer to the symbol table, update the header so other things can reference it good again
+			if sh.PointerToRawData == f.FileHeader.PointerToSymbolTable {
+				f.FileHeader.PointerToSymbolTable = sh.VirtualAddress
+			}
+		}
+		//restore the original location of sr (this shouldn't actually be required, but just in case)
+		sr.Seek(restore, seekStart)
+	}
 
 	// Read string table.
 	f.StringTable, err = readStringTable(&f.FileHeader, sr)

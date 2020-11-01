@@ -80,6 +80,13 @@ func (peFile *File) Bytes() ([]byte, error) {
 			NumberOfLineNumbers:  section.NumberOfLineNumbers,
 			Characteristics:      section.Characteristics,
 		}
+
+		// if the PE file was pulled from memory, the symbol table offset in the header will be wrong.
+		// Fix it up by picking the section that lines up, and use the raw offset instead.
+		if peFile.FileHeader.PointerToSymbolTable == sectionHeader.VirtualAddress {
+			peFile.FileHeader.PointerToSymbolTable = sectionHeader.PointerToRawData
+		}
+
 		sectionHeaders[idx] = sectionHeader
 
 		//log.Printf("section: %+v\nsectionHeader: %+v\n", section, sectionHeader)
