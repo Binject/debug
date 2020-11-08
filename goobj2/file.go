@@ -194,24 +194,29 @@ const (
 	SLIBFUZZER_EXTRA_COUNTER
 )
 
-type ImportCfg map[string]ExportInfo
+type ImportCfg struct {
+	ImportMap map[string]string
+	Packages  map[string]ExportInfo
+}
 
 type ExportInfo struct {
 	Path        string
 	IsSharedLib bool
 }
 
-func ParseImportCfg(path string) (ImportCfg, error) {
+func ParseImportCfg(path string) (importCfg ImportCfg, err error) {
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("error reading importcfg: %v", err)
+		return importCfg, fmt.Errorf("error reading importcfg: %v", err)
 	}
 
 	lines := bytes.Count(data, []byte("\n"))
 	if lines == -1 {
-		return nil, errors.New("error parsing importcfg: could not find any newlines")
+		return importCfg, errors.New("error parsing importcfg: could not find any newlines")
 	}
-	importMap := make(ImportCfg, lines)
+
+	importCfg.ImportMap = make(map[string]string)
+	importCfg.Packages = make(map[string]ExportInfo, lines)
 
 	for lineNum, line := range strings.Split(string(data), "\n") {
 		lineNum++ // 1-based
@@ -235,21 +240,26 @@ func ParseImportCfg(path string) (ImportCfg, error) {
 		}
 		switch verb {
 		default:
-			return nil, fmt.Errorf("error parsing importcfg: %s:%d: unknown directive %q", path, lineNum, verb)
+			return importCfg, fmt.Errorf("error parsing importcfg: %s:%d: unknown directive %q", path, lineNum, verb)
+		case "importmap":
+			if before == "" || after == "" {
+				return importCfg, fmt.Errorf(`error parsing importcfg: %s:%d: invalid importmap: syntax is "importmap path=path"`, path, lineNum)
+			}
+			importCfg.ImportMap[before] = after
 		case "packagefile":
 			if before == "" || after == "" {
-				return nil, fmt.Errorf(`error parsing importcfg: %s:%d: invalid packagefile: syntax is "packagefile path=filename"`, path, lineNum)
+				return importCfg, fmt.Errorf(`error parsing importcfg: %s:%d: invalid packagefile: syntax is "packagefile path=filename"`, path, lineNum)
 			}
-			importMap[before] = ExportInfo{after, false}
+			importCfg.Packages[before] = ExportInfo{after, false}
 		case "packageshlib":
 			if before == "" || after == "" {
-				return nil, fmt.Errorf(`error parsing importcfg: %s:%d: invalid packageshlib: syntax is "packageshlib path=filename"`, path, lineNum)
+				return importCfg, fmt.Errorf(`error parsing importcfg: %s:%d: invalid packageshlib: syntax is "packageshlib path=filename"`, path, lineNum)
 			}
-			importMap[before] = ExportInfo{after, true}
+			importCfg.Packages[before] = ExportInfo{after, true}
 		}
 	}
 
-	return importMap, nil
+	return importCfg, nil
 }
 
 var (
@@ -416,22 +426,27 @@ func (r *objReader) skip(n int64) {
 	}
 }
 
-// Parse parses an object file or archive from f, assuming that its
-// import path is pkgpath. An import configuration file that would
-// be passed into the linker can optionally be passed in as importCfg
+// ImportMap is a function that returns the path of a Go object
+// from a given import path. If the import path is not known,
+// an empty string should be returned.
+type ImportMap = func(importPath string) (objectPath string)
+
+// Parse parses an object file or archive from objPath, assuming that
+// its import path is pkgpath. A function that returns paths of object
+// files from import paths can optionally be passed in as importMap
 // to optimize looking up paths to dependencies' object files.
-func Parse(objPath, pkgPath string, importCfg ImportCfg) (*Package, error) {
+func Parse(objPath, pkgPath string, importMap ImportMap) (*Package, error) {
 	p := new(Package)
 	p.ImportPath = pkgPath
 
-	if _, err := parse(objPath, p, importCfg, false); err != nil {
+	if _, err := parse(objPath, p, importMap, false); err != nil {
 		return nil, err
 	}
 
 	return p, nil
 }
 
-func parse(objPath string, p *Package, importCfg ImportCfg, returnReader bool) (rr *goobj2.Reader, err error) {
+func parse(objPath string, p *Package, importMap ImportMap, returnReader bool) (rr *goobj2.Reader, err error) {
 	f, openErr := os.Open(objPath)
 	if err != nil {
 		return nil, openErr
@@ -457,13 +472,13 @@ func parse(objPath string, p *Package, importCfg ImportCfg, returnReader bool) (
 	default:
 		return nil, errNotObject
 	case bytes.Equal(rd.tmp[:8], archiveHeader):
-		rr, err = rd.parseArchive(importCfg, returnReader)
+		rr, err = rd.parseArchive(importMap, returnReader)
 		if err != nil {
 			return nil, err
 		}
 	case bytes.Equal(rd.tmp[:8], goobjHeader):
 		var am *ArchiveMember
-		rr, am, _, err = rd.parseObject(goobjHeader, importCfg, returnReader)
+		rr, am, _, err = rd.parseObject(goobjHeader, importMap, returnReader)
 		if err != nil {
 			return nil, err
 		}
@@ -480,7 +495,7 @@ func trimSpace(b []byte) string {
 }
 
 // parseArchive parses a Unix archive of Go object files.
-func (r *objReader) parseArchive(importCfg ImportCfg, returnReader bool) (*goobj2.Reader, error) {
+func (r *objReader) parseArchive(importMap ImportMap, returnReader bool) (*goobj2.Reader, error) {
 	for r.offset < r.limit {
 		if err := r.readFull(r.tmp[:archiveHeaderLen]); err != nil {
 			return nil, err
@@ -551,7 +566,7 @@ func (r *objReader) parseArchive(importCfg ImportCfg, returnReader bool) (*goobj
 			}
 			if bytes.Equal(p, goobjHeader) {
 				var rr *goobj2.Reader
-				rr, am, data, err = r.parseObject(nil, importCfg, returnReader)
+				rr, am, data, err = r.parseObject(nil, importMap, returnReader)
 				if err != nil {
 					return nil, fmt.Errorf("parsing archive member %q: %v", ar.Name, err)
 				}
@@ -593,7 +608,7 @@ func (r *objReader) parseArchive(importCfg ImportCfg, returnReader bool) (*goobj
 // and then the part we want to parse begins.
 // The format of that part is defined in a comment at the top
 // of src/liblink/objfile.c.
-func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader bool) (*goobj2.Reader, *ArchiveMember, []byte, error) {
+func (r *objReader) parseObject(prefix []byte, importMap ImportMap, returnReader bool) (*goobj2.Reader, *ArchiveMember, []byte, error) {
 	h := make([]byte, 0, 256)
 	h = append(h, prefix...)
 	var c1, c2, c3 byte
@@ -887,12 +902,11 @@ func (r *objReader) parseObject(prefix []byte, importMap ImportCfg, returnReader
 	return nil, &am, h, nil
 }
 
-func getArchivePath(pkg string, importMap ImportCfg) (s string, err error) {
+func getArchivePath(pkg string, importMap ImportMap) (s string, err error) {
 	// try to get the archive path from the importMap first
 	if importMap != nil {
-		path, ok := importMap[pkg]
-		if ok {
-			return path.Path, nil
+		if path := importMap(pkg); path != "" {
+			return path, nil
 		}
 	}
 
