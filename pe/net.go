@@ -56,8 +56,8 @@ func newMetadataHeader(i io.Reader) (NetMetaData, error) {
 	return r, nil
 }
 
-//GetCLRVersion returns the CLR version specified by the binary. Returns an empty string if not a net binary. String has had trailing nulls stripped.
-func (f File) GetCLRVersion() string {
+//NetCLRVersion returns the CLR version specified by the binary. Returns an empty string if not a net binary. String has had trailing nulls stripped.
+func (f File) NetCLRVersion() string {
 	b := f.Net.MetaData.VersionString
 	for i, x := range b {
 		if x == 0x00 {
