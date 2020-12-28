@@ -456,3 +456,65 @@ func (f *File) IsManaged() bool {
 
 	return false
 }
+
+// RelocationBlock - for base relocation entries
+type RelocationBlock struct {
+	VirtualAddress uint32
+	SizeOfBlock    uint32
+}
+
+// BlockItem - relocation block item
+type BlockItem struct {
+	Val    uint16
+	Type   uint16
+	Offset uint16
+}
+
+// Relocate - performs base relocations on this image to the given offset
+func (f *File) Relocate(offset uint32) {
+
+	pe64 := f.Machine == IMAGE_FILE_MACHINE_AMD64
+	var addr uint32
+	var imageBase uint64
+	if pe64 {
+		addr = f.OptionalHeader.(*OptionalHeader64).DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress
+		imageBase = f.OptionalHeader.(*OptionalHeader64).ImageBase
+	} else {
+		addr = f.OptionalHeader.(*OptionalHeader32).DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress
+		imageBase = uint64(f.OptionalHeader.(*OptionalHeader32).ImageBase)
+	}
+	firstSectionRawDataPtr := uint32(0)
+	for i, val := range f.Sections {
+		if i == 0 {
+			firstSectionRawDataPtr = val.Offset
+		}
+		if val.VirtualAddress == addr { // name should be .reloc?
+			cur := val.Offset
+			d, _ := val.Data()
+			for cur-val.Offset < val.VirtualSize {
+				var reloBlock RelocationBlock
+				binary.Read(bytes.NewBuffer(d[cur:cur+8]), binary.LittleEndian, &reloBlock)
+				cur += 8
+				for i := uint32(0); i < reloBlock.SizeOfBlock-8; i += 2 {
+					var bi BlockItem
+					bi.Val = binary.LittleEndian.Uint16(d[cur : cur+2])
+					bi.Type = uint16(bi.Val >> 12)
+					bi.Offset = bi.Val & 0x0fff
+					localOffset := firstSectionRawDataPtr + uint32(bi.Offset)
+					relAddr := binary.LittleEndian.Uint32(d[localOffset : localOffset+4])
+					relAddr += offset - uint32(imageBase)
+					byts := make([]byte, 4)
+					binary.LittleEndian.PutUint32(byts, relAddr)
+					copy(d[localOffset:localOffset+4], byts)
+					cur += 2
+				}
+			}
+			break
+		}
+	}
+	if pe64 {
+		f.OptionalHeader.(*OptionalHeader64).ImageBase = uint64(offset)
+	} else {
+		f.OptionalHeader.(*OptionalHeader32).ImageBase = uint32(offset)
+	}
+}

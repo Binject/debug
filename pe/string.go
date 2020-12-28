@@ -52,8 +52,6 @@ func readStringTable(fh *FileHeader, r io.ReadSeeker) (StringTable, error) {
 	return StringTable(buf), nil
 }
 
-// TODO(brainman): decide if start parameter should be int instead of uint32
-
 // String extracts string from COFF string table st at offset start.
 func (st StringTable) String(start uint32) (string, error) {
 	// start includes 4 bytes of string table length
