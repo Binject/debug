@@ -31,7 +31,7 @@ type File struct {
 	FileHeader
 	OptionalHeader      interface{} // of type *OptionalHeader32 or *OptionalHeader64
 	Sections            []*Section
-	BaseRelocationTable *[]RelocationBlock
+	BaseRelocationTable *[]RelocationTableEntry
 	Symbols             []*Symbol    // COFF symbols with auxiliary symbol records removed
 	COFFSymbols         []COFFSymbol // all COFF symbols (including auxiliary symbol records)
 	StringTable         StringTable

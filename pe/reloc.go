@@ -6,11 +6,16 @@ import (
 	"io"
 )
 
+// RelocationTable - for base relocation entries
+type RelocationTableEntry struct {
+	RelocationBlock
+	BlockItems []BlockItem
+}
+
 // RelocationBlock - for base relocation entries
 type RelocationBlock struct {
 	VirtualAddress uint32
 	SizeOfBlock    uint32
-	BlockItems     []BlockItem
 }
 
 // BlockItem - relocation block item
@@ -49,7 +54,7 @@ const (
 )
 
 // readBaseRelocationTable - reads the base relocation table from the file and stores it
-func readBaseRelocationTable(f *File, r io.ReadSeeker) (*[]RelocationBlock, error) {
+func readBaseRelocationTable(f *File, r io.ReadSeeker) (*[]RelocationTableEntry, error) {
 
 	var dd DataDirectory
 	if f.Machine == IMAGE_FILE_MACHINE_AMD64 {
@@ -61,7 +66,7 @@ func readBaseRelocationTable(f *File, r io.ReadSeeker) (*[]RelocationBlock, erro
 	if err != nil {
 		return nil, fmt.Errorf("fail to seek to base relocation table: %v", err)
 	}
-	var reloBlocks []RelocationBlock
+	var reloBlocks []RelocationTableEntry
 	bytesRead := 0
 	for bytesRead < int(dd.Size) {
 		var reloBlock RelocationBlock
@@ -85,8 +90,7 @@ func readBaseRelocationTable(f *File, r io.ReadSeeker) (*[]RelocationBlock, erro
 			item.Offset = val & 0x0fff
 			blocks[i] = item
 		}
-		reloBlock.BlockItems = blocks
-		reloBlocks = append(reloBlocks, reloBlock)
+		reloBlocks = append(reloBlocks, RelocationTableEntry{reloBlock, blocks})
 	}
 	return &reloBlocks, nil
 }
