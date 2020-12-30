@@ -1,6 +1,7 @@
 package pe
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -50,11 +51,11 @@ const (
 	//IMAGE_REL_BASED_RISCV_LOW12I   = 7
 	//IMAGE_REL_BASED_RISCV_LOW12S   = 8
 	//IMAGE_REL_BASED_MIPS_JMPADDR16 = 9
-	//IMAGE_REL_BASED_DIR64          = 10
+	IMAGE_REL_BASED_DIR64 = 10
 )
 
 // readBaseRelocationTable - reads the base relocation table from the file and stores it
-func readBaseRelocationTable(f *File, r io.ReadSeeker) (*[]RelocationTableEntry, error) {
+func (f *File) readBaseRelocationTable() (*[]RelocationTableEntry, error) {
 
 	var dd DataDirectory
 	if f.Machine == IMAGE_FILE_MACHINE_AMD64 {
@@ -62,20 +63,28 @@ func readBaseRelocationTable(f *File, r io.ReadSeeker) (*[]RelocationTableEntry,
 	} else {
 		dd = f.OptionalHeader.(*OptionalHeader32).DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
 	}
-	_, err := r.Seek(int64(dd.VirtualAddress), seekStart)
-	if err != nil {
-		return nil, fmt.Errorf("fail to seek to base relocation table: %v", err)
+	var sectionData []byte
+	var err error
+	for _, section := range f.Sections {
+		if section.VirtualAddress == dd.VirtualAddress {
+			sectionData, err = section.Data()
+			if err != nil {
+				return nil, err
+			}
+			break
+		}
 	}
+	r := bytes.NewReader(sectionData)
 	var reloBlocks []RelocationTableEntry
-	bytesRead := 0
-	for bytesRead < int(dd.Size) {
+	bytesRead := uint32(0)
+	for bytesRead < dd.Size {
 		var reloBlock RelocationBlock
 		err = binary.Read(r, binary.LittleEndian, &reloBlock)
 		bytesRead += 8
 		if err != nil {
 			return nil, fmt.Errorf("fail to read relocation block: %v", err)
 		}
-		numBlocks := (reloBlock.SizeOfBlock - 8) / 8
+		numBlocks := (reloBlock.SizeOfBlock - 8) / 2
 		blocks := make([]BlockItem, numBlocks)
 		for i := uint32(0); i < numBlocks; i++ {
 			var buf [2]byte
@@ -104,17 +113,25 @@ func (f *File) Relocate(baseAddr uint64, image *[]byte) {
 	} else {
 		imageBase = uint64(f.OptionalHeader.(*OptionalHeader32).ImageBase)
 	}
-	delta := uint32(baseAddr - imageBase)
-
 	for _, block := range *f.BaseRelocationTable {
 		pageRVA := block.VirtualAddress
 		for _, item := range block.BlockItems {
-			if item.Type == IMAGE_REL_BASED_HIGHLOW {
-				idx := imageBase + uint64(pageRVA) + uint64(item.Offset)
+			if item.Type == IMAGE_REL_BASED_HIGHLOW { // 32 bit
+				delta := uint32(baseAddr - imageBase)
+				fileOffset := f.RVAToFileOffset(pageRVA)
+				idx := fileOffset + uint32(item.Offset)
 				originalAddress := binary.LittleEndian.Uint32((*image)[idx : idx+4])
 				b := make([]byte, 4)
 				binary.LittleEndian.PutUint32(b, originalAddress+delta)
 				copy((*image)[idx:idx+4], b)
+			} else if item.Type == IMAGE_REL_BASED_DIR64 { // 64 bit
+				delta := baseAddr - imageBase
+				fileOffset := f.RVAToFileOffset(pageRVA)
+				idx := fileOffset + uint32(item.Offset)
+				originalAddress := binary.LittleEndian.Uint64((*image)[idx : idx+8])
+				b := make([]byte, 8)
+				binary.LittleEndian.PutUint64(b, originalAddress+delta)
+				copy((*image)[idx:idx+8], b)
 			}
 		}
 	}

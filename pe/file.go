@@ -209,12 +209,6 @@ func newFileInternal(r io.ReaderAt, memoryMode bool) (*File, error) {
 		f.OptionalHeader = &oh64
 	}
 
-	// Read Base Relocation Block and Items
-	f.BaseRelocationTable, err = readBaseRelocationTable(f, sr)
-	if err != nil {
-		return nil, err
-	}
-
 	// Process sections.
 	f.Sections = make([]*Section, f.FileHeader.NumberOfSections)
 	for i := 0; i < int(f.FileHeader.NumberOfSections); i++ {
@@ -258,6 +252,12 @@ func newFileInternal(r io.ReaderAt, memoryMode bool) (*File, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	// Read Base Relocation Block and Items
+	f.BaseRelocationTable, err = f.readBaseRelocationTable()
+	if err != nil {
+		return nil, err
 	}
 
 	// Read certificate table
