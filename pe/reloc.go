@@ -141,7 +141,7 @@ func (f *File) Relocate(baseAddr uint64, image *[]byte) {
 		b := make([]byte, 8)
 		binary.LittleEndian.PutUint64(b, baseAddr)
 		idx := f.OptionalHeaderOffset + 24
-		copy((*image)[idx:idx+4], b)
+		copy((*image)[idx:idx+8], b)
 	} else {
 		b := make([]byte, 4)
 		binary.LittleEndian.PutUint32(b, uint32(baseAddr))
