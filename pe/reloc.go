@@ -116,12 +116,14 @@ func (f *File) Relocate(baseAddr uint64, image *[]byte) {
 	}
 
 	// update imageBase in the optional header
-	b := make([]byte, 4)
-	binary.LittleEndian.PutUint32(b, uint32(baseAddr))
 	if pe64 {
+		b := make([]byte, 8)
+		binary.LittleEndian.PutUint64(b, baseAddr)
 		idx := f.OptionalHeaderOffset + 24
 		copy((*image)[idx:idx+4], b)
 	} else {
+		b := make([]byte, 4)
+		binary.LittleEndian.PutUint32(b, uint32(baseAddr))
 		idx := f.OptionalHeaderOffset + 28
 		copy((*image)[idx:idx+4], b)
 	}
