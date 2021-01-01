@@ -49,7 +49,11 @@ func readStringTable(fh *FileHeader, r io.ReadSeeker) (StringTable, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fail to read string table: %v", err)
 	}
-	return StringTable(buf), nil
+	// re-add the length to the first four bytes of the string table
+	lbuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(lbuf, l)
+
+	return StringTable(append(lbuf, buf...)), nil
 }
 
 // String extracts string from COFF string table st at offset start.
@@ -58,7 +62,7 @@ func (st StringTable) String(start uint32) (string, error) {
 	if start < 4 {
 		return "", fmt.Errorf("offset %d is before the start of string table", start)
 	}
-	start -= 4
+	//start -= 4  // we are now including the uint32 length in the StringTable buffer as a prefix, this might change
 	if int(start) > len(st) {
 		return "", fmt.Errorf("offset %d is beyond the end of string table", start)
 	}
