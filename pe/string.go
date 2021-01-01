@@ -62,7 +62,7 @@ func (st StringTable) String(start uint32) (string, error) {
 	if start < 4 {
 		return "", fmt.Errorf("offset %d is before the start of string table", start)
 	}
-	start -= 4
+	//start -= 4  // we are now including the uint32 length in the StringTable buffer as a prefix, this might change
 	if int(start) > len(st) {
 		return "", fmt.Errorf("offset %d is beyond the end of string table", start)
 	}

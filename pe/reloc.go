@@ -57,6 +57,10 @@ const (
 // readBaseRelocationTable - reads the base relocation table from the file and stores it
 func (f *File) readBaseRelocationTable() (*[]RelocationTableEntry, error) {
 
+	if f.OptionalHeader == nil { // Optional header is optional, might not exist
+		return nil, nil
+	}
+
 	var dd DataDirectory
 	if f.Machine == IMAGE_FILE_MACHINE_AMD64 {
 		dd = f.OptionalHeader.(*OptionalHeader64).DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
