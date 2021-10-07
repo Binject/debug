@@ -126,6 +126,9 @@ func (f *File) ImportedSymbols() ([]string, error) {
 	for _, dt := range ida {
 		d := (*sectionData)[:]
 		// seek to OriginalFirstThunk
+		if dt.OriginalFirstThunk-ds.VirtualAddress > uint32(len(d)) {
+			return all, fmt.Errorf("bad object ref start, got %d maxlen %d", dt.OriginalFirstThunk-ds.VirtualAddress, len(d))
+		}
 		d = d[dt.OriginalFirstThunk-ds.VirtualAddress:]
 		for len(d) > 0 {
 			if pe64 { // 64bit
