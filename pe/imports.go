@@ -1,6 +1,9 @@
 package pe
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 // ImportDirectory entry
 type ImportDirectory struct {
