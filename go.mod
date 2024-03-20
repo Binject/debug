@@ -1,3 +1,3 @@
 module github.com/Binject/debug
 
-go 1.15
+go 1.22.1
