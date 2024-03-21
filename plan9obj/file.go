@@ -19,7 +19,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"internal/saferio"
+	"binject-debug/internal/saferio"
 	"io"
 	"os"
 )
