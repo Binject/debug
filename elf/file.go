@@ -2,7 +2,17 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package elf implements access to ELF object files.
+/*
+Package elf implements access to ELF object files.
+
+# Security
+
+This package is not designed to be hardened against adversarial inputs, and is
+outside the scope of https://go.dev/security/policy. In particular, only basic
+validation is done when parsing object files. As such, care should be taken when
+parsing untrusted inputs, as parsing malformed files may consume significant
+resources, or cause panics.
+*/
 package elf
 
 import (
@@ -12,20 +22,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"binject-debug/internal/saferio"
+	"binject-debug/internal/zstd"
 	"io"
 	"os"
 	"strings"
-)
-
-// seekStart, seekCurrent, seekEnd are copies of
-// io.SeekStart, io.SeekCurrent, and io.SeekEnd.
-// We can't use the ones from package io because
-// we want this code to build with Go 1.4 during
-// cmd/dist bootstrap.
-const (
-	seekStart   int = 0
-	seekCurrent int = 1
-	seekEnd     int = 2
 )
 
 // TODO: error reporting detail
@@ -45,26 +46,26 @@ type FileHeader struct {
 	Type       Type
 	Machine    Machine
 	Entry      uint64
-	SHTOffset  int64
-	ShStrIndex int
 }
 
 // A File represents an open ELF file.
 type File struct {
 	FileHeader
-	Sections     []*Section
 	Progs        []*Prog
+	Sections     []*Section
+	DynamicTags  map[DynTag]uint64
+	ELFHeader32  *Header32
+	ELFHeader64  *Header64
+	Injection    []byte
+	InjectionEOF []byte
 	closer       io.Closer
 	gnuNeed      []verneed
 	gnuVersym    []byte
-	Insertion    []byte
-	InsertionEOF []byte
-
-	DynTags []DynTagValue
 }
 
 // A SectionHeader represents a single ELF section header.
 type SectionHeader struct {
+	Index     uint32
 	Name      string
 	Type      SectionType
 	Flags     SectionFlag
@@ -75,9 +76,6 @@ type SectionHeader struct {
 	Info      uint32
 	Addralign uint64
 	Entsize   uint64
-
-	Shnum  int    // Section Header Number
-	Shname uint32 // Section Header Name (index)
 
 	// FileSize is the size of this section in the file in bytes.
 	// If a section is compressed, FileSize is the size of the
@@ -110,10 +108,10 @@ type Section struct {
 // Data reads and returns the contents of the ELF section.
 // Even if the section is stored compressed in the ELF file,
 // Data returns uncompressed data.
+//
+// For an [SHT_NOBITS] section, Data always returns a non-nil error.
 func (s *Section) Data() ([]byte, error) {
-	dat := make([]byte, s.Size)
-	n, err := io.ReadFull(s.Open(), dat)
-	return dat[0:n], err
+	return saferio.ReadData(s.Open(), s.Size)
 }
 
 // stringTable reads and returns the string table given by the
@@ -128,21 +126,57 @@ func (f *File) stringTable(link uint32) ([]byte, error) {
 // Open returns a new ReadSeeker reading the ELF section.
 // Even if the section is stored compressed in the ELF file,
 // the ReadSeeker reads uncompressed data.
+//
+// For an [SHT_NOBITS] section, all calls to the opened reader
+// will return a non-nil error.
 func (s *Section) Open() io.ReadSeeker {
-	if s.Flags&SHF_COMPRESSED == 0 {
-		return io.NewSectionReader(s.sr, 0, 1<<63-1)
+	if s.Type == SHT_NOBITS {
+		return io.NewSectionReader(&nobitsSectionReader{}, 0, int64(s.Size))
 	}
-	if s.compressionType == COMPRESS_ZLIB {
-		return &readSeekerFromReader{
-			reset: func() (io.Reader, error) {
-				fr := io.NewSectionReader(s.sr, s.compressionOffset, int64(s.FileSize)-s.compressionOffset)
-				return zlib.NewReader(fr)
-			},
-			size: int64(s.Size),
+
+	var zrd func(io.Reader) (io.ReadCloser, error)
+	if s.Flags&SHF_COMPRESSED == 0 {
+
+		if !strings.HasPrefix(s.Name, ".zdebug") {
+			return io.NewSectionReader(s.sr, 0, 1<<63-1)
+		}
+
+		b := make([]byte, 12)
+		n, _ := s.sr.ReadAt(b, 0)
+		if n != 12 || string(b[:4]) != "ZLIB" {
+			return io.NewSectionReader(s.sr, 0, 1<<63-1)
+		}
+
+		s.compressionOffset = 12
+		s.compressionType = COMPRESS_ZLIB
+		s.Size = binary.BigEndian.Uint64(b[4:12])
+		zrd = zlib.NewReader
+
+	} else if s.Flags&SHF_ALLOC != 0 {
+		return errorReader{&FormatError{int64(s.Offset),
+			"SHF_COMPRESSED applies only to non-allocable sections", s.compressionType}}
+	}
+
+	switch s.compressionType {
+	case COMPRESS_ZLIB:
+		zrd = zlib.NewReader
+	case COMPRESS_ZSTD:
+		zrd = func(r io.Reader) (io.ReadCloser, error) {
+			return io.NopCloser(zstd.NewReader(r)), nil
 		}
 	}
-	err := &FormatError{int64(s.Offset), "unknown compression type", s.compressionType}
-	return errorReader{err}
+
+	if zrd == nil {
+		return errorReader{&FormatError{int64(s.Offset), "unknown compression type", s.compressionType}}
+	}
+
+	return &readSeekerFromReader{
+		reset: func() (io.Reader, error) {
+			fr := io.NewSectionReader(s.sr, s.compressionOffset, int64(s.FileSize)-s.compressionOffset)
+			return zrd(fr)
+		},
+		size: int64(s.Size),
+	}
 }
 
 // A ProgHeader represents a single ELF program header.
@@ -177,35 +211,14 @@ func (p *Prog) Open() io.ReadSeeker { return io.NewSectionReader(p.sr, 0, 1<<63-
 // A Symbol represents an entry in an ELF symbol table section.
 type Symbol struct {
 	Name        string
-	NameIndex   uint32
 	Info, Other byte
 	Section     SectionIndex
-	SectIndex   uint16
 	Value, Size uint64
-}
 
-// ToSym64 - Convert to a Sym64
-func (s Symbol) ToSym64() (retval Sym64) {
-
-	retval.Name = s.NameIndex
-	retval.Info = s.Info
-	retval.Other = s.Other
-	retval.Shndx = s.SectIndex
-	retval.Value = s.Value
-	retval.Size = s.Size
-	return
-}
-
-// ToSym32 - Convert to a Sym32
-func (s Symbol) ToSym32() (retval Sym32) {
-
-	retval.Name = s.NameIndex
-	retval.Info = s.Info
-	retval.Other = s.Other
-	retval.Shndx = s.SectIndex
-	retval.Value = uint32(s.Value)
-	retval.Size = uint32(s.Size)
-	return
+	// Version and Library are present only for the dynamic symbol
+	// table.
+	Version string
+	Library string
 }
 
 /*
@@ -215,7 +228,7 @@ func (s Symbol) ToSym32() (retval Sym32) {
 type FormatError struct {
 	off int64
 	msg string
-	val interface{}
+	val any
 }
 
 func (e *FormatError) Error() string {
@@ -227,7 +240,7 @@ func (e *FormatError) Error() string {
 	return msg
 }
 
-// Open opens the named file using os.Open and prepares it for use as an ELF binary.
+// Open opens the named file using [os.Open] and prepares it for use as an ELF binary.
 func Open(name string) (*File, error) {
 	f, err := os.Open(name)
 	if err != nil {
@@ -242,8 +255,8 @@ func Open(name string) (*File, error) {
 	return ff, nil
 }
 
-// Close closes the File.
-// If the File was created using NewFile directly instead of Open,
+// Close closes the [File].
+// If the [File] was created using [NewFile] directly instead of [Open],
 // Close has no effect.
 func (f *File) Close() error {
 	var err error
@@ -265,18 +278,7 @@ func (f *File) SectionByType(typ SectionType) *Section {
 	return nil
 }
 
-// SectionByName returns the first section in f with the
-// given name, or nil if there is no such section.
-func (f *File) SectionByName(name string) *Section {
-	for _, s := range f.Sections {
-		if s.Name == name {
-			return s
-		}
-	}
-	return nil
-}
-
-// NewFile creates a new File for accessing an ELF binary in an underlying reader.
+// NewFile creates a new [File] for accessing an ELF binary in an underlying reader.
 // The ELF binary is expected to start at position 0 in the ReaderAt.
 func NewFile(r io.ReaderAt) (*File, error) {
 	sr := io.NewSectionReader(r, 0, 1<<63-1)
@@ -290,6 +292,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	}
 
 	f := new(File)
+	f.DynamicTags = make(map[DynTag]uint64)
 	f.Class = Class(ident[EI_CLASS])
 	switch f.Class {
 	case ELFCLASS32:
@@ -320,12 +323,12 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	// Read ELF file header
 	var phoff int64
 	var phentsize, phnum int
-	var shentsize, shnum int
-	f.ShStrIndex = -1
+	var shoff int64
+	var shentsize, shnum, shstrndx int
 	switch f.Class {
 	case ELFCLASS32:
 		hdr := new(Header32)
-		sr.Seek(0, seekStart)
+		sr.Seek(0, io.SeekStart)
 		if err := binary.Read(sr, f.ByteOrder, hdr); err != nil {
 			return nil, err
 		}
@@ -338,13 +341,15 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		phoff = int64(hdr.Phoff)
 		phentsize = int(hdr.Phentsize)
 		phnum = int(hdr.Phnum)
-		f.SHTOffset = int64(hdr.Shoff)
+		shoff = int64(hdr.Shoff)
 		shentsize = int(hdr.Shentsize)
 		shnum = int(hdr.Shnum)
-		f.ShStrIndex = int(hdr.Shstrndx)
+		shstrndx = int(hdr.Shstrndx)
+		f.ELFHeader32 = hdr
+		f.ELFHeader64 = nil
 	case ELFCLASS64:
 		hdr := new(Header64)
-		sr.Seek(0, seekStart)
+		sr.Seek(0, io.SeekStart)
 		if err := binary.Read(sr, f.ByteOrder, hdr); err != nil {
 			return nil, err
 		}
@@ -357,21 +362,47 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		phoff = int64(hdr.Phoff)
 		phentsize = int(hdr.Phentsize)
 		phnum = int(hdr.Phnum)
-		f.SHTOffset = int64(hdr.Shoff)
+		shoff = int64(hdr.Shoff)
 		shentsize = int(hdr.Shentsize)
 		shnum = int(hdr.Shnum)
-		f.ShStrIndex = int(hdr.Shstrndx)
+		shstrndx = int(hdr.Shstrndx)
+		f.ELFHeader32 = nil
+		f.ELFHeader64 = hdr
 	}
 
-	if shnum > 0 && f.SHTOffset > 0 && (f.ShStrIndex < 0 || f.ShStrIndex >= shnum) {
-		return nil, &FormatError{0, "invalid ELF shstrndx", f.ShStrIndex}
+	if shoff < 0 {
+		return nil, &FormatError{0, "invalid shoff", shoff}
+	}
+	if phoff < 0 {
+		return nil, &FormatError{0, "invalid phoff", phoff}
+	}
+
+	if shoff == 0 && shnum != 0 {
+		return nil, &FormatError{0, "invalid ELF shnum for shoff=0", shnum}
+	}
+
+	if shnum > 0 && shstrndx >= shnum {
+		return nil, &FormatError{0, "invalid ELF shstrndx", shstrndx}
+	}
+
+	var wantPhentsize, wantShentsize int
+	switch f.Class {
+	case ELFCLASS32:
+		wantPhentsize = 8 * 4
+		wantShentsize = 10 * 4
+	case ELFCLASS64:
+		wantPhentsize = 2*4 + 6*8
+		wantShentsize = 4*4 + 6*8
+	}
+	if phnum > 0 && phentsize < wantPhentsize {
+		return nil, &FormatError{0, "invalid ELF phentsize", phentsize}
 	}
 
 	// Read program headers
 	f.Progs = make([]*Prog, phnum)
 	for i := 0; i < phnum; i++ {
 		off := phoff + int64(i)*int64(phentsize)
-		sr.Seek(off, seekStart)
+		sr.Seek(off, io.SeekStart)
 		p := new(Prog)
 		switch f.Class {
 		case ELFCLASS32:
@@ -405,17 +436,77 @@ func NewFile(r io.ReaderAt) (*File, error) {
 				Align:  ph.Align,
 			}
 		}
+		if int64(p.Off) < 0 {
+			return nil, &FormatError{off, "invalid program header offset", p.Off}
+		}
+		if int64(p.Filesz) < 0 {
+			return nil, &FormatError{off, "invalid program header file size", p.Filesz}
+		}
 		p.sr = io.NewSectionReader(r, int64(p.Off), int64(p.Filesz))
 		p.ReaderAt = p.sr
 		f.Progs[i] = p
 	}
 
+	// If the number of sections is greater than or equal to SHN_LORESERVE
+	// (0xff00), shnum has the value zero and the actual number of section
+	// header table entries is contained in the sh_size field of the section
+	// header at index 0.
+	if shoff > 0 && shnum == 0 {
+		var typ, link uint32
+		sr.Seek(shoff, io.SeekStart)
+		switch f.Class {
+		case ELFCLASS32:
+			sh := new(Section32)
+			if err := binary.Read(sr, f.ByteOrder, sh); err != nil {
+				return nil, err
+			}
+			shnum = int(sh.Size)
+			typ = sh.Type
+			link = sh.Link
+		case ELFCLASS64:
+			sh := new(Section64)
+			if err := binary.Read(sr, f.ByteOrder, sh); err != nil {
+				return nil, err
+			}
+			shnum = int(sh.Size)
+			typ = sh.Type
+			link = sh.Link
+		}
+		if SectionType(typ) != SHT_NULL {
+			return nil, &FormatError{shoff, "invalid type of the initial section", SectionType(typ)}
+		}
+
+		if shnum < int(SHN_LORESERVE) {
+			return nil, &FormatError{shoff, "invalid ELF shnum contained in sh_size", shnum}
+		}
+
+		// If the section name string table section index is greater than or
+		// equal to SHN_LORESERVE (0xff00), this member has the value
+		// SHN_XINDEX (0xffff) and the actual index of the section name
+		// string table section is contained in the sh_link field of the
+		// section header at index 0.
+		if shstrndx == int(SHN_XINDEX) {
+			shstrndx = int(link)
+			if shstrndx < int(SHN_LORESERVE) {
+				return nil, &FormatError{shoff, "invalid ELF shstrndx contained in sh_link", shstrndx}
+			}
+		}
+	}
+
+	if shnum > 0 && shentsize < wantShentsize {
+		return nil, &FormatError{0, "invalid ELF shentsize", shentsize}
+	}
+
 	// Read section headers
-	f.Sections = make([]*Section, shnum)
-	names := make([]uint32, shnum)
+	c := saferio.SliceCap[Section](uint64(shnum))
+	if c < 0 {
+		return nil, &FormatError{0, "too many sections", shnum}
+	}
+	f.Sections = make([]*Section, 0, c)
+	names := make([]uint32, 0, c)
 	for i := 0; i < shnum; i++ {
-		off := f.SHTOffset + int64(i)*int64(shentsize)
-		sr.Seek(off, seekStart)
+		off := shoff + int64(i)*int64(shentsize)
+		sr.Seek(off, io.SeekStart)
 		s := new(Section)
 		switch f.Class {
 		case ELFCLASS32:
@@ -423,8 +514,9 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			if err := binary.Read(sr, f.ByteOrder, sh); err != nil {
 				return nil, err
 			}
-			names[i] = sh.Name
+			names = append(names, sh.Name)
 			s.SectionHeader = SectionHeader{
+				Index:     sh.Name,
 				Type:      SectionType(sh.Type),
 				Flags:     SectionFlag(sh.Flags),
 				Addr:      uint64(sh.Addr),
@@ -434,17 +526,15 @@ func NewFile(r io.ReaderAt) (*File, error) {
 				Info:      sh.Info,
 				Addralign: uint64(sh.Addralign),
 				Entsize:   uint64(sh.Entsize),
-				Shnum:     i,
-				Shname:    sh.Name,
 			}
-
 		case ELFCLASS64:
 			sh := new(Section64)
 			if err := binary.Read(sr, f.ByteOrder, sh); err != nil {
 				return nil, err
 			}
-			names[i] = sh.Name
+			names = append(names, sh.Name)
 			s.SectionHeader = SectionHeader{
+				Index:     sh.Name,
 				Type:      SectionType(sh.Type),
 				Flags:     SectionFlag(sh.Flags),
 				Offset:    sh.Off,
@@ -454,9 +544,13 @@ func NewFile(r io.ReaderAt) (*File, error) {
 				Info:      sh.Info,
 				Addralign: sh.Addralign,
 				Entsize:   sh.Entsize,
-				Shnum:     i,
-				Shname:    sh.Name,
 			}
+		}
+		if int64(s.Offset) < 0 {
+			return nil, &FormatError{off, "invalid section offset", int64(s.Offset)}
+		}
+		if int64(s.FileSize) < 0 {
+			return nil, &FormatError{off, "invalid section size", int64(s.FileSize)}
 		}
 		s.sr = io.NewSectionReader(r, int64(s.Offset), int64(s.FileSize))
 
@@ -487,11 +581,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			}
 		}
 
-		f.Sections[i] = s
-	}
-
-	if err := f.parseDynTags(); err != nil {
-		return nil, err
+		f.Sections = append(f.Sections, s)
 	}
 
 	if len(f.Sections) == 0 {
@@ -499,7 +589,16 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	}
 
 	// Load section header string table.
-	shstrtab, err := f.Sections[f.ShStrIndex].Data()
+	if shstrndx == 0 {
+		// If the file has no section name string table,
+		// shstrndx holds the value SHN_UNDEF (0).
+		return f, nil
+	}
+	shstr := f.Sections[shstrndx]
+	if shstr.Type != SHT_STRTAB {
+		return nil, &FormatError{shoff + int64(shstrndx*shentsize), "invalid ELF section name string table type", shstr.Type}
+	}
+	shstrtab, err := shstr.Data()
 	if err != nil {
 		return nil, err
 	}
@@ -507,7 +606,29 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		var ok bool
 		s.Name, ok = getString(shstrtab, int(names[i]))
 		if !ok {
-			return nil, &FormatError{f.SHTOffset + int64(i*shentsize), "bad section name index", names[i]}
+			return nil, &FormatError{shoff + int64(i*shentsize), "bad section name index", names[i]}
+		}
+	}
+
+	// Load dynamic/exported section string table values
+	shdyn := f.SectionByType(SHT_DYNAMIC)
+	if shdyn != nil {
+		d, err := shdyn.Data()
+		if err == nil {
+			r := bytes.NewBuffer(d)
+			for {
+				var t DynTag
+				var v uint64
+				err1 := binary.Read(r, f.ByteOrder, &t)
+				if err1 != nil {
+					break
+				}
+				err2 := binary.Read(r, f.ByteOrder, &v)
+				if err2 != nil {
+					break
+				}
+				f.DynamicTags[t] = v
+			}
 		}
 	}
 
@@ -528,7 +649,7 @@ func (f *File) getSymbols(typ SectionType) ([]Symbol, []byte, error) {
 	return nil, nil, errors.New("not implemented")
 }
 
-// ErrNoSymbols is returned by File.Symbols and File.DynamicSymbols
+// ErrNoSymbols is returned by [File.Symbols] and [File.DynamicSymbols]
 // if there is no such section in the File.
 var ErrNoSymbols = errors.New("no symbol section")
 
@@ -540,28 +661,34 @@ func (f *File) getSymbols32(typ SectionType) ([]Symbol, []byte, error) {
 
 	data, err := symtabSection.Data()
 	if err != nil {
-		return nil, nil, errors.New("cannot load symbol section")
+		return nil, nil, fmt.Errorf("cannot load symbol section: %w", err)
 	}
-	symtab := bytes.NewReader(data)
-	if symtab.Len()%Sym32Size != 0 {
+	if len(data) == 0 {
+		return nil, nil, errors.New("symbol section is empty")
+	}
+	if len(data)%Sym32Size != 0 {
 		return nil, nil, errors.New("length of symbol section is not a multiple of SymSize")
 	}
 
 	strdata, err := f.stringTable(symtabSection.Link)
 	if err != nil {
-		return nil, nil, errors.New("cannot load string table section")
+		return nil, nil, fmt.Errorf("cannot load string table section: %w", err)
 	}
 
 	// The first entry is all zeros.
-	var skip [Sym32Size]byte
-	symtab.Read(skip[:])
+	data = data[Sym32Size:]
 
-	symbols := make([]Symbol, symtab.Len()/Sym32Size)
+	symbols := make([]Symbol, len(data)/Sym32Size)
 
 	i := 0
 	var sym Sym32
-	for symtab.Len() > 0 {
-		binary.Read(symtab, f.ByteOrder, &sym)
+	for len(data) > 0 {
+		sym.Name = f.ByteOrder.Uint32(data[0:4])
+		sym.Value = f.ByteOrder.Uint32(data[4:8])
+		sym.Size = f.ByteOrder.Uint32(data[8:12])
+		sym.Info = data[12]
+		sym.Other = data[13]
+		sym.Shndx = f.ByteOrder.Uint16(data[14:16])
 		str, _ := getString(strdata, int(sym.Name))
 		symbols[i].Name = str
 		symbols[i].Info = sym.Info
@@ -570,6 +697,7 @@ func (f *File) getSymbols32(typ SectionType) ([]Symbol, []byte, error) {
 		symbols[i].Value = uint64(sym.Value)
 		symbols[i].Size = uint64(sym.Size)
 		i++
+		data = data[Sym32Size:]
 	}
 
 	return symbols, strdata, nil
@@ -583,38 +711,40 @@ func (f *File) getSymbols64(typ SectionType) ([]Symbol, []byte, error) {
 
 	data, err := symtabSection.Data()
 	if err != nil {
-		return nil, nil, errors.New("cannot load symbol section")
+		return nil, nil, fmt.Errorf("cannot load symbol section: %w", err)
 	}
-	symtab := bytes.NewReader(data)
-	if symtab.Len()%Sym64Size != 0 {
+	if len(data)%Sym64Size != 0 {
 		return nil, nil, errors.New("length of symbol section is not a multiple of Sym64Size")
 	}
 
 	strdata, err := f.stringTable(symtabSection.Link)
 	if err != nil {
-		return nil, nil, errors.New("cannot load string table section")
+		return nil, nil, fmt.Errorf("cannot load string table section: %w", err)
 	}
 
 	// The first entry is all zeros.
-	var skip [Sym64Size]byte
-	symtab.Read(skip[:])
+	data = data[Sym64Size:]
 
-	symbols := make([]Symbol, symtab.Len()/Sym64Size)
+	symbols := make([]Symbol, len(data)/Sym64Size)
 
 	i := 0
 	var sym Sym64
-	for symtab.Len() > 0 {
-		binary.Read(symtab, f.ByteOrder, &sym)
+	for len(data) > 0 {
+		sym.Name = f.ByteOrder.Uint32(data[0:4])
+		sym.Info = data[4]
+		sym.Other = data[5]
+		sym.Shndx = f.ByteOrder.Uint16(data[6:8])
+		sym.Value = f.ByteOrder.Uint64(data[8:16])
+		sym.Size = f.ByteOrder.Uint64(data[16:24])
 		str, _ := getString(strdata, int(sym.Name))
 		symbols[i].Name = str
-		symbols[i].NameIndex = sym.Name
 		symbols[i].Info = sym.Info
 		symbols[i].Other = sym.Other
 		symbols[i].Section = SectionIndex(sym.Shndx)
-		symbols[i].SectIndex = sym.Shndx
 		symbols[i].Value = sym.Value
 		symbols[i].Size = sym.Size
 		i++
+		data = data[Sym64Size:]
 	}
 
 	return symbols, strdata, nil
@@ -645,7 +775,587 @@ func (f *File) Section(name string) *Section {
 	return nil
 }
 
-// DWARF - No idea what this does
+// applyRelocations applies relocations to dst. rels is a relocations section
+// in REL or RELA format.
+func (f *File) applyRelocations(dst []byte, rels []byte) error {
+	switch {
+	case f.Class == ELFCLASS64 && f.Machine == EM_X86_64:
+		return f.applyRelocationsAMD64(dst, rels)
+	case f.Class == ELFCLASS32 && f.Machine == EM_386:
+		return f.applyRelocations386(dst, rels)
+	case f.Class == ELFCLASS32 && f.Machine == EM_ARM:
+		return f.applyRelocationsARM(dst, rels)
+	case f.Class == ELFCLASS64 && f.Machine == EM_AARCH64:
+		return f.applyRelocationsARM64(dst, rels)
+	case f.Class == ELFCLASS32 && f.Machine == EM_PPC:
+		return f.applyRelocationsPPC(dst, rels)
+	case f.Class == ELFCLASS64 && f.Machine == EM_PPC64:
+		return f.applyRelocationsPPC64(dst, rels)
+	case f.Class == ELFCLASS32 && f.Machine == EM_MIPS:
+		return f.applyRelocationsMIPS(dst, rels)
+	case f.Class == ELFCLASS64 && f.Machine == EM_MIPS:
+		return f.applyRelocationsMIPS64(dst, rels)
+	case f.Class == ELFCLASS64 && f.Machine == EM_LOONGARCH:
+		return f.applyRelocationsLOONG64(dst, rels)
+	case f.Class == ELFCLASS64 && f.Machine == EM_RISCV:
+		return f.applyRelocationsRISCV64(dst, rels)
+	case f.Class == ELFCLASS64 && f.Machine == EM_S390:
+		return f.applyRelocationss390x(dst, rels)
+	case f.Class == ELFCLASS64 && f.Machine == EM_SPARCV9:
+		return f.applyRelocationsSPARC64(dst, rels)
+	default:
+		return errors.New("applyRelocations: not implemented")
+	}
+}
+
+// canApplyRelocation reports whether we should try to apply a
+// relocation to a DWARF data section, given a pointer to the symbol
+// targeted by the relocation.
+// Most relocations in DWARF data tend to be section-relative, but
+// some target non-section symbols (for example, low_PC attrs on
+// subprogram or compilation unit DIEs that target function symbols).
+func canApplyRelocation(sym *Symbol) bool {
+	return sym.Section != SHN_UNDEF && sym.Section < SHN_LORESERVE
+}
+
+func (f *File) applyRelocationsAMD64(dst []byte, rels []byte) error {
+	// 24 is the size of Rela64.
+	if len(rels)%24 != 0 {
+		return errors.New("length of relocation section is not a multiple of 24")
+	}
+
+	symbols, _, err := f.getSymbols(SHT_SYMTAB)
+	if err != nil {
+		return err
+	}
+
+	b := bytes.NewReader(rels)
+	var rela Rela64
+
+	for b.Len() > 0 {
+		binary.Read(b, f.ByteOrder, &rela)
+		symNo := rela.Info >> 32
+		t := R_X86_64(rela.Info & 0xffff)
+
+		if symNo == 0 || symNo > uint64(len(symbols)) {
+			continue
+		}
+		sym := &symbols[symNo-1]
+		if !canApplyRelocation(sym) {
+			continue
+		}
+
+		// There are relocations, so this must be a normal
+		// object file.  The code below handles only basic relocations
+		// of the form S + A (symbol plus addend).
+
+		switch t {
+		case R_X86_64_64:
+			if rela.Off+8 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val64 := sym.Value + uint64(rela.Addend)
+			f.ByteOrder.PutUint64(dst[rela.Off:rela.Off+8], val64)
+		case R_X86_64_32:
+			if rela.Off+4 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val32 := uint32(sym.Value) + uint32(rela.Addend)
+			f.ByteOrder.PutUint32(dst[rela.Off:rela.Off+4], val32)
+		}
+	}
+
+	return nil
+}
+
+func (f *File) applyRelocations386(dst []byte, rels []byte) error {
+	// 8 is the size of Rel32.
+	if len(rels)%8 != 0 {
+		return errors.New("length of relocation section is not a multiple of 8")
+	}
+
+	symbols, _, err := f.getSymbols(SHT_SYMTAB)
+	if err != nil {
+		return err
+	}
+
+	b := bytes.NewReader(rels)
+	var rel Rel32
+
+	for b.Len() > 0 {
+		binary.Read(b, f.ByteOrder, &rel)
+		symNo := rel.Info >> 8
+		t := R_386(rel.Info & 0xff)
+
+		if symNo == 0 || symNo > uint32(len(symbols)) {
+			continue
+		}
+		sym := &symbols[symNo-1]
+
+		if t == R_386_32 {
+			if rel.Off+4 >= uint32(len(dst)) {
+				continue
+			}
+			val := f.ByteOrder.Uint32(dst[rel.Off : rel.Off+4])
+			val += uint32(sym.Value)
+			f.ByteOrder.PutUint32(dst[rel.Off:rel.Off+4], val)
+		}
+	}
+
+	return nil
+}
+
+func (f *File) applyRelocationsARM(dst []byte, rels []byte) error {
+	// 8 is the size of Rel32.
+	if len(rels)%8 != 0 {
+		return errors.New("length of relocation section is not a multiple of 8")
+	}
+
+	symbols, _, err := f.getSymbols(SHT_SYMTAB)
+	if err != nil {
+		return err
+	}
+
+	b := bytes.NewReader(rels)
+	var rel Rel32
+
+	for b.Len() > 0 {
+		binary.Read(b, f.ByteOrder, &rel)
+		symNo := rel.Info >> 8
+		t := R_ARM(rel.Info & 0xff)
+
+		if symNo == 0 || symNo > uint32(len(symbols)) {
+			continue
+		}
+		sym := &symbols[symNo-1]
+
+		switch t {
+		case R_ARM_ABS32:
+			if rel.Off+4 >= uint32(len(dst)) {
+				continue
+			}
+			val := f.ByteOrder.Uint32(dst[rel.Off : rel.Off+4])
+			val += uint32(sym.Value)
+			f.ByteOrder.PutUint32(dst[rel.Off:rel.Off+4], val)
+		}
+	}
+
+	return nil
+}
+
+func (f *File) applyRelocationsARM64(dst []byte, rels []byte) error {
+	// 24 is the size of Rela64.
+	if len(rels)%24 != 0 {
+		return errors.New("length of relocation section is not a multiple of 24")
+	}
+
+	symbols, _, err := f.getSymbols(SHT_SYMTAB)
+	if err != nil {
+		return err
+	}
+
+	b := bytes.NewReader(rels)
+	var rela Rela64
+
+	for b.Len() > 0 {
+		binary.Read(b, f.ByteOrder, &rela)
+		symNo := rela.Info >> 32
+		t := R_AARCH64(rela.Info & 0xffff)
+
+		if symNo == 0 || symNo > uint64(len(symbols)) {
+			continue
+		}
+		sym := &symbols[symNo-1]
+		if !canApplyRelocation(sym) {
+			continue
+		}
+
+		// There are relocations, so this must be a normal
+		// object file.  The code below handles only basic relocations
+		// of the form S + A (symbol plus addend).
+
+		switch t {
+		case R_AARCH64_ABS64:
+			if rela.Off+8 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val64 := sym.Value + uint64(rela.Addend)
+			f.ByteOrder.PutUint64(dst[rela.Off:rela.Off+8], val64)
+		case R_AARCH64_ABS32:
+			if rela.Off+4 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val32 := uint32(sym.Value) + uint32(rela.Addend)
+			f.ByteOrder.PutUint32(dst[rela.Off:rela.Off+4], val32)
+		}
+	}
+
+	return nil
+}
+
+func (f *File) applyRelocationsPPC(dst []byte, rels []byte) error {
+	// 12 is the size of Rela32.
+	if len(rels)%12 != 0 {
+		return errors.New("length of relocation section is not a multiple of 12")
+	}
+
+	symbols, _, err := f.getSymbols(SHT_SYMTAB)
+	if err != nil {
+		return err
+	}
+
+	b := bytes.NewReader(rels)
+	var rela Rela32
+
+	for b.Len() > 0 {
+		binary.Read(b, f.ByteOrder, &rela)
+		symNo := rela.Info >> 8
+		t := R_PPC(rela.Info & 0xff)
+
+		if symNo == 0 || symNo > uint32(len(symbols)) {
+			continue
+		}
+		sym := &symbols[symNo-1]
+		if !canApplyRelocation(sym) {
+			continue
+		}
+
+		switch t {
+		case R_PPC_ADDR32:
+			if rela.Off+4 >= uint32(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val32 := uint32(sym.Value) + uint32(rela.Addend)
+			f.ByteOrder.PutUint32(dst[rela.Off:rela.Off+4], val32)
+		}
+	}
+
+	return nil
+}
+
+func (f *File) applyRelocationsPPC64(dst []byte, rels []byte) error {
+	// 24 is the size of Rela64.
+	if len(rels)%24 != 0 {
+		return errors.New("length of relocation section is not a multiple of 24")
+	}
+
+	symbols, _, err := f.getSymbols(SHT_SYMTAB)
+	if err != nil {
+		return err
+	}
+
+	b := bytes.NewReader(rels)
+	var rela Rela64
+
+	for b.Len() > 0 {
+		binary.Read(b, f.ByteOrder, &rela)
+		symNo := rela.Info >> 32
+		t := R_PPC64(rela.Info & 0xffff)
+
+		if symNo == 0 || symNo > uint64(len(symbols)) {
+			continue
+		}
+		sym := &symbols[symNo-1]
+		if !canApplyRelocation(sym) {
+			continue
+		}
+
+		switch t {
+		case R_PPC64_ADDR64:
+			if rela.Off+8 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val64 := sym.Value + uint64(rela.Addend)
+			f.ByteOrder.PutUint64(dst[rela.Off:rela.Off+8], val64)
+		case R_PPC64_ADDR32:
+			if rela.Off+4 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val32 := uint32(sym.Value) + uint32(rela.Addend)
+			f.ByteOrder.PutUint32(dst[rela.Off:rela.Off+4], val32)
+		}
+	}
+
+	return nil
+}
+
+func (f *File) applyRelocationsMIPS(dst []byte, rels []byte) error {
+	// 8 is the size of Rel32.
+	if len(rels)%8 != 0 {
+		return errors.New("length of relocation section is not a multiple of 8")
+	}
+
+	symbols, _, err := f.getSymbols(SHT_SYMTAB)
+	if err != nil {
+		return err
+	}
+
+	b := bytes.NewReader(rels)
+	var rel Rel32
+
+	for b.Len() > 0 {
+		binary.Read(b, f.ByteOrder, &rel)
+		symNo := rel.Info >> 8
+		t := R_MIPS(rel.Info & 0xff)
+
+		if symNo == 0 || symNo > uint32(len(symbols)) {
+			continue
+		}
+		sym := &symbols[symNo-1]
+
+		switch t {
+		case R_MIPS_32:
+			if rel.Off+4 >= uint32(len(dst)) {
+				continue
+			}
+			val := f.ByteOrder.Uint32(dst[rel.Off : rel.Off+4])
+			val += uint32(sym.Value)
+			f.ByteOrder.PutUint32(dst[rel.Off:rel.Off+4], val)
+		}
+	}
+
+	return nil
+}
+
+func (f *File) applyRelocationsMIPS64(dst []byte, rels []byte) error {
+	// 24 is the size of Rela64.
+	if len(rels)%24 != 0 {
+		return errors.New("length of relocation section is not a multiple of 24")
+	}
+
+	symbols, _, err := f.getSymbols(SHT_SYMTAB)
+	if err != nil {
+		return err
+	}
+
+	b := bytes.NewReader(rels)
+	var rela Rela64
+
+	for b.Len() > 0 {
+		binary.Read(b, f.ByteOrder, &rela)
+		var symNo uint64
+		var t R_MIPS
+		if f.ByteOrder == binary.BigEndian {
+			symNo = rela.Info >> 32
+			t = R_MIPS(rela.Info & 0xff)
+		} else {
+			symNo = rela.Info & 0xffffffff
+			t = R_MIPS(rela.Info >> 56)
+		}
+
+		if symNo == 0 || symNo > uint64(len(symbols)) {
+			continue
+		}
+		sym := &symbols[symNo-1]
+		if !canApplyRelocation(sym) {
+			continue
+		}
+
+		switch t {
+		case R_MIPS_64:
+			if rela.Off+8 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val64 := sym.Value + uint64(rela.Addend)
+			f.ByteOrder.PutUint64(dst[rela.Off:rela.Off+8], val64)
+		case R_MIPS_32:
+			if rela.Off+4 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val32 := uint32(sym.Value) + uint32(rela.Addend)
+			f.ByteOrder.PutUint32(dst[rela.Off:rela.Off+4], val32)
+		}
+	}
+
+	return nil
+}
+
+func (f *File) applyRelocationsLOONG64(dst []byte, rels []byte) error {
+	// 24 is the size of Rela64.
+	if len(rels)%24 != 0 {
+		return errors.New("length of relocation section is not a multiple of 24")
+	}
+
+	symbols, _, err := f.getSymbols(SHT_SYMTAB)
+	if err != nil {
+		return err
+	}
+
+	b := bytes.NewReader(rels)
+	var rela Rela64
+
+	for b.Len() > 0 {
+		binary.Read(b, f.ByteOrder, &rela)
+		var symNo uint64
+		var t R_LARCH
+		symNo = rela.Info >> 32
+		t = R_LARCH(rela.Info & 0xffff)
+
+		if symNo == 0 || symNo > uint64(len(symbols)) {
+			continue
+		}
+		sym := &symbols[symNo-1]
+		if !canApplyRelocation(sym) {
+			continue
+		}
+
+		switch t {
+		case R_LARCH_64:
+			if rela.Off+8 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val64 := sym.Value + uint64(rela.Addend)
+			f.ByteOrder.PutUint64(dst[rela.Off:rela.Off+8], val64)
+		case R_LARCH_32:
+			if rela.Off+4 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val32 := uint32(sym.Value) + uint32(rela.Addend)
+			f.ByteOrder.PutUint32(dst[rela.Off:rela.Off+4], val32)
+		}
+	}
+
+	return nil
+}
+
+func (f *File) applyRelocationsRISCV64(dst []byte, rels []byte) error {
+	// 24 is the size of Rela64.
+	if len(rels)%24 != 0 {
+		return errors.New("length of relocation section is not a multiple of 24")
+	}
+
+	symbols, _, err := f.getSymbols(SHT_SYMTAB)
+	if err != nil {
+		return err
+	}
+
+	b := bytes.NewReader(rels)
+	var rela Rela64
+
+	for b.Len() > 0 {
+		binary.Read(b, f.ByteOrder, &rela)
+		symNo := rela.Info >> 32
+		t := R_RISCV(rela.Info & 0xffff)
+
+		if symNo == 0 || symNo > uint64(len(symbols)) {
+			continue
+		}
+		sym := &symbols[symNo-1]
+		if !canApplyRelocation(sym) {
+			continue
+		}
+
+		switch t {
+		case R_RISCV_64:
+			if rela.Off+8 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val64 := sym.Value + uint64(rela.Addend)
+			f.ByteOrder.PutUint64(dst[rela.Off:rela.Off+8], val64)
+		case R_RISCV_32:
+			if rela.Off+4 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val32 := uint32(sym.Value) + uint32(rela.Addend)
+			f.ByteOrder.PutUint32(dst[rela.Off:rela.Off+4], val32)
+		}
+	}
+
+	return nil
+}
+
+func (f *File) applyRelocationss390x(dst []byte, rels []byte) error {
+	// 24 is the size of Rela64.
+	if len(rels)%24 != 0 {
+		return errors.New("length of relocation section is not a multiple of 24")
+	}
+
+	symbols, _, err := f.getSymbols(SHT_SYMTAB)
+	if err != nil {
+		return err
+	}
+
+	b := bytes.NewReader(rels)
+	var rela Rela64
+
+	for b.Len() > 0 {
+		binary.Read(b, f.ByteOrder, &rela)
+		symNo := rela.Info >> 32
+		t := R_390(rela.Info & 0xffff)
+
+		if symNo == 0 || symNo > uint64(len(symbols)) {
+			continue
+		}
+		sym := &symbols[symNo-1]
+		if !canApplyRelocation(sym) {
+			continue
+		}
+
+		switch t {
+		case R_390_64:
+			if rela.Off+8 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val64 := sym.Value + uint64(rela.Addend)
+			f.ByteOrder.PutUint64(dst[rela.Off:rela.Off+8], val64)
+		case R_390_32:
+			if rela.Off+4 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val32 := uint32(sym.Value) + uint32(rela.Addend)
+			f.ByteOrder.PutUint32(dst[rela.Off:rela.Off+4], val32)
+		}
+	}
+
+	return nil
+}
+
+func (f *File) applyRelocationsSPARC64(dst []byte, rels []byte) error {
+	// 24 is the size of Rela64.
+	if len(rels)%24 != 0 {
+		return errors.New("length of relocation section is not a multiple of 24")
+	}
+
+	symbols, _, err := f.getSymbols(SHT_SYMTAB)
+	if err != nil {
+		return err
+	}
+
+	b := bytes.NewReader(rels)
+	var rela Rela64
+
+	for b.Len() > 0 {
+		binary.Read(b, f.ByteOrder, &rela)
+		symNo := rela.Info >> 32
+		t := R_SPARC(rela.Info & 0xff)
+
+		if symNo == 0 || symNo > uint64(len(symbols)) {
+			continue
+		}
+		sym := &symbols[symNo-1]
+		if !canApplyRelocation(sym) {
+			continue
+		}
+
+		switch t {
+		case R_SPARC_64, R_SPARC_UA64:
+			if rela.Off+8 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val64 := sym.Value + uint64(rela.Addend)
+			f.ByteOrder.PutUint64(dst[rela.Off:rela.Off+8], val64)
+		case R_SPARC_32, R_SPARC_UA32:
+			if rela.Off+4 >= uint64(len(dst)) || rela.Addend < 0 {
+				continue
+			}
+			val32 := uint32(sym.Value) + uint32(rela.Addend)
+			f.ByteOrder.PutUint32(dst[rela.Off:rela.Off+4], val32)
+		}
+	}
+
+	return nil
+}
+
 func (f *File) DWARF() (*dwarf.Data, error) {
 	dwarfSuffix := func(s *Section) string {
 		switch {
@@ -666,20 +1376,11 @@ func (f *File) DWARF() (*dwarf.Data, error) {
 			return nil, err
 		}
 
-		if len(b) >= 12 && string(b[:4]) == "ZLIB" {
-			dlen := binary.BigEndian.Uint64(b[4:12])
-			dbuf := make([]byte, dlen)
-			r, err := zlib.NewReader(bytes.NewBuffer(b[12:]))
-			if err != nil {
-				return nil, err
-			}
-			if _, err := io.ReadFull(r, dbuf); err != nil {
-				return nil, err
-			}
-			if err := r.Close(); err != nil {
-				return nil, err
-			}
-			b = dbuf
+		if f.Type == ET_EXEC {
+			// Do not apply relocations to DWARF sections for ET_EXEC binaries.
+			// Relocations should already be applied, and .rela sections may
+			// contain incorrect data.
+			return b, nil
 		}
 
 		for _, r := range f.Sections {
@@ -701,9 +1402,8 @@ func (f *File) DWARF() (*dwarf.Data, error) {
 		return b, nil
 	}
 
-	// There are many other DWARF sections, but these
-	// are the ones the debug/dwarf package uses.
-	// Don't bother loading others.
+	// There are many DWARf sections, but these are the ones
+	// the debug/dwarf package started with.
 	var dat = map[string][]byte{"abbrev": nil, "info": nil, "str": nil, "line": nil, "ranges": nil}
 	for i, s := range f.Sections {
 		suffix := dwarfSuffix(s)
@@ -725,10 +1425,14 @@ func (f *File) DWARF() (*dwarf.Data, error) {
 		return nil, err
 	}
 
-	// Look for DWARF4 .debug_types sections.
+	// Look for DWARF4 .debug_types sections and DWARF5 sections.
 	for i, s := range f.Sections {
 		suffix := dwarfSuffix(s)
-		if suffix != "types" {
+		if suffix == "" {
+			continue
+		}
+		if _, ok := dat[suffix]; ok {
+			// Already handled.
 			continue
 		}
 
@@ -737,9 +1441,14 @@ func (f *File) DWARF() (*dwarf.Data, error) {
 			return nil, err
 		}
 
-		err = d.AddTypes(fmt.Sprintf("types-%d", i), b)
-		if err != nil {
-			return nil, err
+		if suffix == "types" {
+			if err := d.AddTypes(fmt.Sprintf("types-%d", i), b); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := d.AddSection(".debug_"+suffix, b); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -760,12 +1469,23 @@ func (f *File) Symbols() ([]Symbol, error) {
 // DynamicSymbols returns the dynamic symbol table for f. The symbols
 // will be listed in the order they appear in f.
 //
-// For compatibility with Symbols, DynamicSymbols omits the null symbol at index 0.
+// If f has a symbol version table, the returned [File.Symbols] will have
+// initialized [Version] and Library fields.
+//
+// For compatibility with [File.Symbols], [File.DynamicSymbols] omits the null symbol at index 0.
 // After retrieving the symbols as symtab, an externally supplied index x
 // corresponds to symtab[x-1], not symtab[x].
 func (f *File) DynamicSymbols() ([]Symbol, error) {
-	sym, _, err := f.getSymbols(SHT_DYNSYM)
-	return sym, err
+	sym, str, err := f.getSymbols(SHT_DYNSYM)
+	if err != nil {
+		return nil, err
+	}
+	if f.gnuVersionInit(str) {
+		for i := range sym {
+			sym[i].Library, sym[i].Version = f.gnuVersion(i)
+		}
+	}
+	return sym, nil
 }
 
 type ImportedSymbol struct {
@@ -788,7 +1508,8 @@ func (f *File) ImportedSymbols() ([]ImportedSymbol, error) {
 	for i, s := range sym {
 		if ST_BIND(s.Info) == STB_GLOBAL && s.Section == SHN_UNDEF {
 			all = append(all, ImportedSymbol{Name: s.Name})
-			f.gnuVersion(i, &all[len(all)-1])
+			sym := &all[len(all)-1]
+			sym.Library, sym.Version = f.gnuVersion(i)
 		}
 	}
 	return all, nil
@@ -801,11 +1522,16 @@ type verneed struct {
 
 // gnuVersionInit parses the GNU version tables
 // for use by calls to gnuVersion.
-func (f *File) gnuVersionInit(str []byte) {
+func (f *File) gnuVersionInit(str []byte) bool {
+	if f.gnuNeed != nil {
+		// Already initialized
+		return true
+	}
+
 	// Accumulate verneed information.
 	vn := f.SectionByType(SHT_GNU_VERNEED)
 	if vn == nil {
-		return
+		return false
 	}
 	d, _ := vn.Data()
 
@@ -860,29 +1586,33 @@ func (f *File) gnuVersionInit(str []byte) {
 	// Versym parallels symbol table, indexing into verneed.
 	vs := f.SectionByType(SHT_GNU_VERSYM)
 	if vs == nil {
-		return
+		return false
 	}
 	d, _ = vs.Data()
 
 	f.gnuNeed = need
 	f.gnuVersym = d
+	return true
 }
 
 // gnuVersion adds Library and Version information to sym,
 // which came from offset i of the symbol table.
-func (f *File) gnuVersion(i int, sym *ImportedSymbol) {
-	// Each entry is two bytes.
+func (f *File) gnuVersion(i int) (library string, version string) {
+	// Each entry is two bytes; skip undef entry at beginning.
 	i = (i + 1) * 2
 	if i >= len(f.gnuVersym) {
 		return
 	}
-	j := int(f.ByteOrder.Uint16(f.gnuVersym[i:]))
+	s := f.gnuVersym[i:]
+	if len(s) < 2 {
+		return
+	}
+	j := int(f.ByteOrder.Uint16(s))
 	if j < 2 || j >= len(f.gnuNeed) {
 		return
 	}
 	n := &f.gnuNeed[j]
-	sym.Library = n.File
-	sym.Version = n.Name
+	return n.File, n.Name
 }
 
 // ImportedLibraries returns the names of all libraries
@@ -892,59 +1622,33 @@ func (f *File) ImportedLibraries() ([]string, error) {
 	return f.DynString(DT_NEEDED)
 }
 
-func (f *File) parseDynTags() error {
-	s := f.SectionByType(SHT_DYNAMIC)
-	if s == nil {
-		return nil // nothing to do
-	}
-
-	var m []DynTagValue
-	d, err := s.Data()
-	if err != nil {
-		return err
-	}
-	//fmt.Printf("%+v\nd: %x len(%d)\n", s, d, len(d))
-
-	r := bytes.NewBuffer(d)
-	for {
-		var t, v uint64
-		if err := binary.Read(r, f.ByteOrder, &t); err != nil {
-			if err == io.EOF {
-				break
-			} else if err != nil {
-				return err
-			}
-		}
-		if err := binary.Read(r, f.ByteOrder, &v); err != nil {
-			if err == io.EOF {
-				break
-			} else if err != nil {
-				return err
-			}
-		}
-		m = append(m, DynTagValue{Tag: DynTag(t), Value: v})
-		//fmt.Printf("%x -> %x\n", t, v)
-	}
-	f.DynTags = m
-	return nil
-}
-
 // DynString returns the strings listed for the given tag in the file's dynamic
 // section.
 //
-// The tag must be one that takes string values: DT_NEEDED, DT_SONAME, DT_RPATH, or
-// DT_RUNPATH.
+// The tag must be one that takes string values: [DT_NEEDED], [DT_SONAME], [DT_RPATH], or
+// [DT_RUNPATH].
 func (f *File) DynString(tag DynTag) ([]string, error) {
 	switch tag {
 	case DT_NEEDED, DT_SONAME, DT_RPATH, DT_RUNPATH:
 	default:
 		return nil, fmt.Errorf("non-string-valued tag %v", tag)
 	}
-
 	ds := f.SectionByType(SHT_DYNAMIC)
 	if ds == nil {
 		// not dynamic, so no libraries
 		return nil, nil
+	}
+	d, err := ds.Data()
+	if err != nil {
+		return nil, err
+	}
+
+	dynSize := 8
+	if f.Class == ELFCLASS64 {
+		dynSize = 16
+	}
+	if len(d)%dynSize != 0 {
+		return nil, errors.New("length of dynamic section is not a multiple of dynamic entry size")
 	}
 
 	str, err := f.stringTable(ds.Link)
@@ -952,13 +1656,73 @@ func (f *File) DynString(tag DynTag) ([]string, error) {
 		return nil, err
 	}
 	var all []string
-	for _, taggedValue := range f.DynTags {
-		if taggedValue.Tag == tag {
-			s, ok := getString(str, int(taggedValue.Value))
+	for len(d) > 0 {
+		var t DynTag
+		var v uint64
+		switch f.Class {
+		case ELFCLASS32:
+			t = DynTag(f.ByteOrder.Uint32(d[0:4]))
+			v = uint64(f.ByteOrder.Uint32(d[4:8]))
+			d = d[8:]
+		case ELFCLASS64:
+			t = DynTag(f.ByteOrder.Uint64(d[0:8]))
+			v = f.ByteOrder.Uint64(d[8:16])
+			d = d[16:]
+		}
+		if t == tag {
+			s, ok := getString(str, int(v))
 			if ok {
 				all = append(all, s)
 			}
 		}
 	}
 	return all, nil
+}
+
+// DynValue returns the values listed for the given tag in the file's dynamic
+// section.
+func (f *File) DynValue(tag DynTag) ([]uint64, error) {
+	ds := f.SectionByType(SHT_DYNAMIC)
+	if ds == nil {
+		return nil, nil
+	}
+	d, err := ds.Data()
+	if err != nil {
+		return nil, err
+	}
+
+	dynSize := 8
+	if f.Class == ELFCLASS64 {
+		dynSize = 16
+	}
+	if len(d)%dynSize != 0 {
+		return nil, errors.New("length of dynamic section is not a multiple of dynamic entry size")
+	}
+
+	// Parse the .dynamic section as a string of bytes.
+	var vals []uint64
+	for len(d) > 0 {
+		var t DynTag
+		var v uint64
+		switch f.Class {
+		case ELFCLASS32:
+			t = DynTag(f.ByteOrder.Uint32(d[0:4]))
+			v = uint64(f.ByteOrder.Uint32(d[4:8]))
+			d = d[8:]
+		case ELFCLASS64:
+			t = DynTag(f.ByteOrder.Uint64(d[0:8]))
+			v = f.ByteOrder.Uint64(d[8:16])
+			d = d[16:]
+		}
+		if t == tag {
+			vals = append(vals, v)
+		}
+	}
+	return vals, nil
+}
+
+type nobitsSectionReader struct{}
+
+func (*nobitsSectionReader) ReadAt(p []byte, off int64) (n int, err error) {
+	return 0, errors.New("unexpected read from SHT_NOBITS section")
 }

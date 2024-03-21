@@ -11,7 +11,9 @@
 package dwarf
 
 import (
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"strconv"
 )
 
@@ -26,12 +28,13 @@ type afield struct {
 	attr  Attr
 	fmt   format
 	class Class
+	val   int64 // for formImplicitConst
 }
 
 // a map from entry format ids to their descriptions
 type abbrevTable map[uint32]abbrev
 
-// ParseAbbrev returns the abbreviation table that starts at byte off
+// parseAbbrev returns the abbreviation table that starts at byte off
 // in the .debug_abbrev section.
 func (d *Data) parseAbbrev(off uint64, vers int) (abbrevTable, error) {
 	if m, ok := d.abbrevCache[off]; ok {
@@ -67,6 +70,9 @@ func (d *Data) parseAbbrev(off uint64, vers int) (abbrevTable, error) {
 			if tag == 0 && fmt == 0 {
 				break
 			}
+			if format(fmt) == formImplicitConst {
+				b1.int()
+			}
 			n++
 		}
 		if b1.err != nil {
@@ -82,6 +88,9 @@ func (d *Data) parseAbbrev(off uint64, vers int) (abbrevTable, error) {
 			a.field[i].attr = Attr(b.uint())
 			a.field[i].fmt = format(b.uint())
 			a.field[i].class = formToClass(a.field[i].fmt, a.field[i].attr, vers, &b)
+			if a.field[i].fmt == formImplicitConst {
+				a.field[i].val = b.int()
+			}
 		}
 		b.uint()
 		b.uint()
@@ -137,6 +146,11 @@ var attrPtrClass = map[Attr]Class{
 	AttrUseLocation:   ClassLocListPtr,
 	AttrVtableElemLoc: ClassLocListPtr,
 	AttrRanges:        ClassRangeListPtr,
+	// The following are new in DWARF 5.
+	AttrStrOffsetsBase: ClassStrOffsetsPtr,
+	AttrAddrBase:       ClassAddrPtr,
+	AttrRnglistsBase:   ClassRngListsPtr,
+	AttrLoclistsBase:   ClassLocListPtr,
 }
 
 // formToClass returns the DWARF 4 Class for the given form. If the
@@ -148,7 +162,10 @@ func formToClass(form format, attr Attr, vers int, b *buf) Class {
 		b.error("cannot determine class of unknown attribute form")
 		return 0
 
-	case formAddr:
+	case formIndirect:
+		return ClassUnknown
+
+	case formAddr, formAddrx, formAddrx1, formAddrx2, formAddrx3, formAddrx4:
 		return ClassAddress
 
 	case formDwarfBlock1, formDwarfBlock2, formDwarfBlock4, formDwarfBlock:
@@ -163,7 +180,7 @@ func formToClass(form format, attr Attr, vers int, b *buf) Class {
 		}
 		return ClassBlock
 
-	case formData1, formData2, formData4, formData8, formSdata, formUdata:
+	case formData1, formData2, formData4, formData8, formSdata, formUdata, formData16, formImplicitConst:
 		// In DWARF 2 and 3, ClassPtr was encoded as a
 		// constant. Unlike ClassExprLoc/ClassBlock, some
 		// DWARF 4 attributes need to distinguish Class*Ptr
@@ -177,13 +194,13 @@ func formToClass(form format, attr Attr, vers int, b *buf) Class {
 	case formFlag, formFlagPresent:
 		return ClassFlag
 
-	case formRefAddr, formRef1, formRef2, formRef4, formRef8, formRefUdata:
+	case formRefAddr, formRef1, formRef2, formRef4, formRef8, formRefUdata, formRefSup4, formRefSup8:
 		return ClassReference
 
 	case formRefSig8:
 		return ClassReferenceSig
 
-	case formString, formStrp:
+	case formString, formStrp, formStrx, formStrpSup, formLineStrp, formStrx1, formStrx2, formStrx3, formStrx4:
 		return ClassString
 
 	case formSecOffset:
@@ -203,6 +220,12 @@ func formToClass(form format, attr Attr, vers int, b *buf) Class {
 
 	case formGnuStrpAlt:
 		return ClassStringAlt
+
+	case formLoclistx:
+		return ClassLocList
+
+	case formRnglistx:
+		return ClassRngList
 	}
 }
 
@@ -214,32 +237,32 @@ type Entry struct {
 	Field    []Field
 }
 
-// A Field is a single attribute/value pair in an Entry.
+// A Field is a single attribute/value pair in an [Entry].
 //
 // A value can be one of several "attribute classes" defined by DWARF.
 // The Go types corresponding to each class are:
 //
-//    DWARF class       Go type        Class
-//    -----------       -------        -----
-//    address           uint64         ClassAddress
-//    block             []byte         ClassBlock
-//    constant          int64          ClassConstant
-//    flag              bool           ClassFlag
-//    reference
-//      to info         dwarf.Offset   ClassReference
-//      to type unit    uint64         ClassReferenceSig
-//    string            string         ClassString
-//    exprloc           []byte         ClassExprLoc
-//    lineptr           int64          ClassLinePtr
-//    loclistptr        int64          ClassLocListPtr
-//    macptr            int64          ClassMacPtr
-//    rangelistptr      int64          ClassRangeListPtr
+//	DWARF class       Go type        Class
+//	-----------       -------        -----
+//	address           uint64         ClassAddress
+//	block             []byte         ClassBlock
+//	constant          int64          ClassConstant
+//	flag              bool           ClassFlag
+//	reference
+//	  to info         dwarf.Offset   ClassReference
+//	  to type unit    uint64         ClassReferenceSig
+//	string            string         ClassString
+//	exprloc           []byte         ClassExprLoc
+//	lineptr           int64          ClassLinePtr
+//	loclistptr        int64          ClassLocListPtr
+//	macptr            int64          ClassMacPtr
+//	rangelistptr      int64          ClassRangeListPtr
 //
-// For unrecognized or vendor-defined attributes, Class may be
-// ClassUnknown.
+// For unrecognized or vendor-defined attributes, [Class] may be
+// [ClassUnknown].
 type Field struct {
 	Attr  Attr
-	Val   interface{}
+	Val   any
 	Class Class
 }
 
@@ -295,7 +318,7 @@ const (
 	// the "mac" section.
 	ClassMacPtr
 
-	// ClassMacPtr represents values that are an int64 offset into
+	// ClassRangeListPtr represents values that are an int64 offset into
 	// the "rangelist" section.
 	ClassRangeListPtr
 
@@ -324,6 +347,27 @@ const (
 	// offset into the DWARF string section of an alternate object
 	// file.
 	ClassStringAlt
+
+	// ClassAddrPtr represents values that are an int64 offset
+	// into the "addr" section.
+	ClassAddrPtr
+
+	// ClassLocList represents values that are an int64 offset
+	// into the "loclists" section.
+	ClassLocList
+
+	// ClassRngList represents values that are a uint64 offset
+	// from the base of the "rnglists" section.
+	ClassRngList
+
+	// ClassRngListsPtr represents values that are an int64 offset
+	// into the "rnglists" section. These are used as the base for
+	// ClassRngList values.
+	ClassRngListsPtr
+
+	// ClassStrOffsetsPtr represents values that are an int64
+	// offset into the "str_offsets" section.
+	ClassStrOffsetsPtr
 )
 
 //go:generate stringer -type=Class
@@ -332,22 +376,22 @@ func (i Class) GoString() string {
 	return "dwarf." + i.String()
 }
 
-// Val returns the value associated with attribute Attr in Entry,
+// Val returns the value associated with attribute [Attr] in [Entry],
 // or nil if there is no such attribute.
 //
 // A common idiom is to merge the check for nil return with
 // the check that the value has the expected dynamic type, as in:
-//	v, ok := e.Val(AttrSibling).(int64)
 //
-func (e *Entry) Val(a Attr) interface{} {
+//	v, ok := e.Val(AttrSibling).(int64)
+func (e *Entry) Val(a Attr) any {
 	if f := e.AttrField(a); f != nil {
 		return f.Val
 	}
 	return nil
 }
 
-// AttrField returns the Field associated with attribute Attr in
-// Entry, or nil if there is no such attribute.
+// AttrField returns the [Field] associated with attribute [Attr] in
+// [Entry], or nil if there is no such attribute.
 func (e *Entry) AttrField(a Attr) *Field {
 	for i, f := range e.Field {
 		if f.Attr == a {
@@ -357,13 +401,13 @@ func (e *Entry) AttrField(a Attr) *Field {
 	return nil
 }
 
-// An Offset represents the location of an Entry within the DWARF info.
-// (See Reader.Seek.)
+// An Offset represents the location of an [Entry] within the DWARF info.
+// (See [Reader.Seek].)
 type Offset uint32
 
 // Entry reads a single entry from buf, decoding
 // according to the given abbreviation table.
-func (b *buf) entry(atab abbrevTable, ubase Offset) *Entry {
+func (b *buf) entry(cu *Entry, atab abbrevTable, ubase Offset, vers int) *Entry {
 	off := b.off
 	id := uint32(b.uint())
 	if id == 0 {
@@ -380,14 +424,85 @@ func (b *buf) entry(atab abbrevTable, ubase Offset) *Entry {
 		Children: a.children,
 		Field:    make([]Field, len(a.field)),
 	}
+
+	// If we are currently parsing the compilation unit,
+	// we can't evaluate Addrx or Strx until we've seen the
+	// relevant base entry.
+	type delayed struct {
+		idx int
+		off uint64
+		fmt format
+	}
+	var delay []delayed
+
+	resolveStrx := func(strBase, off uint64) string {
+		off += strBase
+		if uint64(int(off)) != off {
+			b.error("DW_FORM_strx offset out of range")
+		}
+
+		b1 := makeBuf(b.dwarf, b.format, "str_offsets", 0, b.dwarf.strOffsets)
+		b1.skip(int(off))
+		is64, _ := b.format.dwarf64()
+		if is64 {
+			off = b1.uint64()
+		} else {
+			off = uint64(b1.uint32())
+		}
+		if b1.err != nil {
+			b.err = b1.err
+			return ""
+		}
+		if uint64(int(off)) != off {
+			b.error("DW_FORM_strx indirect offset out of range")
+		}
+		b1 = makeBuf(b.dwarf, b.format, "str", 0, b.dwarf.str)
+		b1.skip(int(off))
+		val := b1.string()
+		if b1.err != nil {
+			b.err = b1.err
+		}
+		return val
+	}
+
+	resolveRnglistx := func(rnglistsBase, off uint64) uint64 {
+		is64, _ := b.format.dwarf64()
+		if is64 {
+			off *= 8
+		} else {
+			off *= 4
+		}
+		off += rnglistsBase
+		if uint64(int(off)) != off {
+			b.error("DW_FORM_rnglistx offset out of range")
+		}
+
+		b1 := makeBuf(b.dwarf, b.format, "rnglists", 0, b.dwarf.rngLists)
+		b1.skip(int(off))
+		if is64 {
+			off = b1.uint64()
+		} else {
+			off = uint64(b1.uint32())
+		}
+		if b1.err != nil {
+			b.err = b1.err
+			return 0
+		}
+		if uint64(int(off)) != off {
+			b.error("DW_FORM_rnglistx indirect offset out of range")
+		}
+		return rnglistsBase + off
+	}
+
 	for i := range e.Field {
 		e.Field[i].Attr = a.field[i].attr
 		e.Field[i].Class = a.field[i].class
 		fmt := a.field[i].fmt
 		if fmt == formIndirect {
 			fmt = format(b.uint())
+			e.Field[i].Class = formToClass(fmt, a.field[i].attr, vers, b)
 		}
-		var val interface{}
+		var val any
 		switch fmt {
 		default:
 			b.error("unknown entry attr format 0x" + strconv.FormatInt(int64(fmt), 16))
@@ -395,6 +510,47 @@ func (b *buf) entry(atab abbrevTable, ubase Offset) *Entry {
 		// address
 		case formAddr:
 			val = b.addr()
+		case formAddrx, formAddrx1, formAddrx2, formAddrx3, formAddrx4:
+			var off uint64
+			switch fmt {
+			case formAddrx:
+				off = b.uint()
+			case formAddrx1:
+				off = uint64(b.uint8())
+			case formAddrx2:
+				off = uint64(b.uint16())
+			case formAddrx3:
+				off = uint64(b.uint24())
+			case formAddrx4:
+				off = uint64(b.uint32())
+			}
+			if b.dwarf.addr == nil {
+				b.error("DW_FORM_addrx with no .debug_addr section")
+			}
+			if b.err != nil {
+				return nil
+			}
+
+			// We have to adjust by the offset of the
+			// compilation unit. This won't work if the
+			// program uses Reader.Seek to skip over the
+			// unit. Not much we can do about that.
+			var addrBase int64
+			if cu != nil {
+				addrBase, _ = cu.Val(AttrAddrBase).(int64)
+			} else if a.tag == TagCompileUnit {
+				delay = append(delay, delayed{i, off, formAddrx})
+				break
+			}
+
+			var err error
+			val, err = b.dwarf.debugAddr(b.format, uint64(addrBase), off)
+			if err != nil {
+				if b.err == nil {
+					b.err = err
+				}
+				return nil
+			}
 
 		// block
 		case formDwarfBlock1:
@@ -415,10 +571,14 @@ func (b *buf) entry(atab abbrevTable, ubase Offset) *Entry {
 			val = int64(b.uint32())
 		case formData8:
 			val = int64(b.uint64())
+		case formData16:
+			val = b.bytes(16)
 		case formSdata:
 			val = int64(b.int())
 		case formUdata:
 			val = int64(b.uint())
+		case formImplicitConst:
+			val = a.field[i].val
 
 		// flag
 		case formFlag:
@@ -460,28 +620,90 @@ func (b *buf) entry(atab abbrevTable, ubase Offset) *Entry {
 		// string
 		case formString:
 			val = b.string()
-		case formStrp:
+		case formStrp, formLineStrp:
 			var off uint64 // offset into .debug_str
 			is64, known := b.format.dwarf64()
 			if !known {
-				b.error("unknown size for DW_FORM_strp")
+				b.error("unknown size for DW_FORM_strp/line_strp")
 			} else if is64 {
 				off = b.uint64()
 			} else {
 				off = uint64(b.uint32())
 			}
 			if uint64(int(off)) != off {
-				b.error("DW_FORM_strp offset out of range")
+				b.error("DW_FORM_strp/line_strp offset out of range")
 			}
 			if b.err != nil {
 				return nil
 			}
-			b1 := makeBuf(b.dwarf, unknownFormat{}, "str", 0, b.dwarf.str)
+			var b1 buf
+			if fmt == formStrp {
+				b1 = makeBuf(b.dwarf, b.format, "str", 0, b.dwarf.str)
+			} else {
+				if len(b.dwarf.lineStr) == 0 {
+					b.error("DW_FORM_line_strp with no .debug_line_str section")
+					return nil
+				}
+				b1 = makeBuf(b.dwarf, b.format, "line_str", 0, b.dwarf.lineStr)
+			}
 			b1.skip(int(off))
 			val = b1.string()
 			if b1.err != nil {
 				b.err = b1.err
 				return nil
+			}
+		case formStrx, formStrx1, formStrx2, formStrx3, formStrx4:
+			var off uint64
+			switch fmt {
+			case formStrx:
+				off = b.uint()
+			case formStrx1:
+				off = uint64(b.uint8())
+			case formStrx2:
+				off = uint64(b.uint16())
+			case formStrx3:
+				off = uint64(b.uint24())
+			case formStrx4:
+				off = uint64(b.uint32())
+			}
+			if len(b.dwarf.strOffsets) == 0 {
+				b.error("DW_FORM_strx with no .debug_str_offsets section")
+			}
+			is64, known := b.format.dwarf64()
+			if !known {
+				b.error("unknown offset size for DW_FORM_strx")
+			}
+			if b.err != nil {
+				return nil
+			}
+			if is64 {
+				off *= 8
+			} else {
+				off *= 4
+			}
+
+			// We have to adjust by the offset of the
+			// compilation unit. This won't work if the
+			// program uses Reader.Seek to skip over the
+			// unit. Not much we can do about that.
+			var strBase int64
+			if cu != nil {
+				strBase, _ = cu.Val(AttrStrOffsetsBase).(int64)
+			} else if a.tag == TagCompileUnit {
+				delay = append(delay, delayed{i, off, formStrx})
+				break
+			}
+
+			val = resolveStrx(uint64(strBase), off)
+
+		case formStrpSup:
+			is64, known := b.format.dwarf64()
+			if !known {
+				b.error("unknown size for DW_FORM_strp_sup")
+			} else if is64 {
+				val = b.uint64()
+			} else {
+				val = b.uint32()
 			}
 
 		// lineptr, loclistptr, macptr, rangelistptr
@@ -507,31 +729,86 @@ func (b *buf) entry(atab abbrevTable, ubase Offset) *Entry {
 		case formRefSig8:
 			// 64-bit type signature.
 			val = b.uint64()
+		case formRefSup4:
+			val = b.uint32()
+		case formRefSup8:
+			val = b.uint64()
+
+		// loclist
+		case formLoclistx:
+			val = b.uint()
+
+		// rnglist
+		case formRnglistx:
+			off := b.uint()
+
+			// We have to adjust by the rnglists_base of
+			// the compilation unit. This won't work if
+			// the program uses Reader.Seek to skip over
+			// the unit. Not much we can do about that.
+			var rnglistsBase int64
+			if cu != nil {
+				rnglistsBase, _ = cu.Val(AttrRnglistsBase).(int64)
+			} else if a.tag == TagCompileUnit {
+				delay = append(delay, delayed{i, off, formRnglistx})
+				break
+			}
+
+			val = resolveRnglistx(uint64(rnglistsBase), off)
 		}
+
 		e.Field[i].Val = val
 	}
 	if b.err != nil {
 		return nil
 	}
+
+	for _, del := range delay {
+		switch del.fmt {
+		case formAddrx:
+			addrBase, _ := e.Val(AttrAddrBase).(int64)
+			val, err := b.dwarf.debugAddr(b.format, uint64(addrBase), del.off)
+			if err != nil {
+				b.err = err
+				return nil
+			}
+			e.Field[del.idx].Val = val
+		case formStrx:
+			strBase, _ := e.Val(AttrStrOffsetsBase).(int64)
+			e.Field[del.idx].Val = resolveStrx(uint64(strBase), del.off)
+			if b.err != nil {
+				return nil
+			}
+		case formRnglistx:
+			rnglistsBase, _ := e.Val(AttrRnglistsBase).(int64)
+			e.Field[del.idx].Val = resolveRnglistx(uint64(rnglistsBase), del.off)
+			if b.err != nil {
+				return nil
+			}
+		}
+	}
+
 	return e
 }
 
-// A Reader allows reading Entry structures from a DWARF ``info'' section.
-// The Entry structures are arranged in a tree. The Reader's Next function
+// A Reader allows reading [Entry] structures from a DWARF “info” section.
+// The [Entry] structures are arranged in a tree. The [Reader.Next] function
 // return successive entries from a pre-order traversal of the tree.
 // If an entry has children, its Children field will be true, and the children
-// follow, terminated by an Entry with Tag 0.
+// follow, terminated by an [Entry] with [Tag] 0.
 type Reader struct {
 	b            buf
 	d            *Data
 	err          error
 	unit         int
+	lastUnit     bool   // set if last entry returned by Next is TagCompileUnit/TagPartialUnit
 	lastChildren bool   // .Children of last entry returned by Next
 	lastSibling  Offset // .Val(AttrSibling) of last entry returned by Next
+	cu           *Entry // current compilation unit
 }
 
-// Reader returns a new Reader for Data.
-// The reader is positioned at byte offset 0 in the DWARF ``info'' section.
+// Reader returns a new Reader for [Data].
+// The reader is positioned at byte offset 0 in the DWARF “info” section.
 func (d *Data) Reader() *Reader {
 	r := &Reader{d: d}
 	r.Seek(0)
@@ -544,7 +821,12 @@ func (r *Reader) AddressSize() int {
 	return r.d.unit[r.unit].asize
 }
 
-// Seek positions the Reader at offset off in the encoded entry stream.
+// ByteOrder returns the byte order in the current compilation unit.
+func (r *Reader) ByteOrder() binary.ByteOrder {
+	return r.b.order
+}
+
+// Seek positions the [Reader] at offset off in the encoded entry stream.
 // Offset 0 can be used to denote the first entry.
 func (r *Reader) Seek(off Offset) {
 	d := r.d
@@ -557,6 +839,7 @@ func (r *Reader) Seek(off Offset) {
 		u := &d.unit[0]
 		r.unit = 0
 		r.b = makeBuf(r.d, u, "info", u.off, u.data)
+		r.cu = nil
 		return
 	}
 
@@ -564,6 +847,9 @@ func (r *Reader) Seek(off Offset) {
 	if i == -1 {
 		r.err = errors.New("offset out of range")
 		return
+	}
+	if i != r.unit {
+		r.cu = nil
 	}
 	u := &d.unit[i]
 	r.unit = i
@@ -573,16 +859,22 @@ func (r *Reader) Seek(off Offset) {
 // maybeNextUnit advances to the next unit if this one is finished.
 func (r *Reader) maybeNextUnit() {
 	for len(r.b.data) == 0 && r.unit+1 < len(r.d.unit) {
-		r.unit++
-		u := &r.d.unit[r.unit]
-		r.b = makeBuf(r.d, u, "info", u.off, u.data)
+		r.nextUnit()
 	}
+}
+
+// nextUnit advances to the next unit.
+func (r *Reader) nextUnit() {
+	r.unit++
+	u := &r.d.unit[r.unit]
+	r.b = makeBuf(r.d, u, "info", u.off, u.data)
+	r.cu = nil
 }
 
 // Next reads the next entry from the encoded entry stream.
 // It returns nil, nil when it reaches the end of the section.
 // It returns an error if the current offset is invalid or the data at the
-// offset cannot be decoded as a valid Entry.
+// offset cannot be decoded as a valid [Entry].
 func (r *Reader) Next() (*Entry, error) {
 	if r.err != nil {
 		return nil, r.err
@@ -592,15 +884,20 @@ func (r *Reader) Next() (*Entry, error) {
 		return nil, nil
 	}
 	u := &r.d.unit[r.unit]
-	e := r.b.entry(u.atable, u.base)
+	e := r.b.entry(r.cu, u.atable, u.base, u.vers)
 	if r.b.err != nil {
 		r.err = r.b.err
 		return nil, r.err
 	}
+	r.lastUnit = false
 	if e != nil {
 		r.lastChildren = e.Children
 		if r.lastChildren {
 			r.lastSibling, _ = e.Val(AttrSibling).(Offset)
+		}
+		if e.Tag == TagCompileUnit || e.Tag == TagPartialUnit {
+			r.lastUnit = true
+			r.cu = e
 		}
 	} else {
 		r.lastChildren = false
@@ -609,8 +906,8 @@ func (r *Reader) Next() (*Entry, error) {
 }
 
 // SkipChildren skips over the child entries associated with
-// the last Entry returned by Next. If that Entry did not have
-// children or Next has not been called, SkipChildren is a no-op.
+// the last [Entry] returned by [Reader.Next]. If that [Entry] did not have
+// children or [Reader.Next] has not been called, SkipChildren is a no-op.
 func (r *Reader) SkipChildren() {
 	if r.err != nil || !r.lastChildren {
 		return
@@ -622,6 +919,11 @@ func (r *Reader) SkipChildren() {
 	// child subtrees.
 	if r.lastSibling >= r.b.off {
 		r.Seek(r.lastSibling)
+		return
+	}
+
+	if r.lastUnit && r.unit+1 < len(r.d.unit) {
+		r.nextUnit()
 		return
 	}
 
@@ -648,9 +950,9 @@ func (r *Reader) offset() Offset {
 	return r.b.off
 }
 
-// SeekPC returns the Entry for the compilation unit that includes pc,
+// SeekPC returns the [Entry] for the compilation unit that includes pc,
 // and positions the reader to read the children of that unit.  If pc
-// is not covered by any unit, SeekPC returns ErrUnknownPC and the
+// is not covered by any unit, SeekPC returns [ErrUnknownPC] and the
 // position of the reader is undefined.
 //
 // Because compilation units can describe multiple regions of the
@@ -669,11 +971,15 @@ func (r *Reader) SeekPC(pc uint64) (*Entry, error) {
 		r.err = nil
 		r.lastChildren = false
 		r.unit = unit
+		r.cu = nil
 		u := &r.d.unit[unit]
 		r.b = makeBuf(r.d, u, "info", u.off, u.data)
 		e, err := r.Next()
 		if err != nil {
 			return nil, err
+		}
+		if e == nil || e.Tag == 0 {
+			return nil, ErrUnknownPC
 		}
 		ranges, err := r.d.Ranges(e)
 		if err != nil {
@@ -690,7 +996,7 @@ func (r *Reader) SeekPC(pc uint64) (*Entry, error) {
 }
 
 // Ranges returns the PC ranges covered by e, a slice of [low,high) pairs.
-// Only some entry types, such as TagCompileUnit or TagSubprogram, have PC
+// Only some entry types, such as [TagCompileUnit] or [TagSubprogram], have PC
 // ranges; for others, this will return nil with no error.
 func (d *Data) Ranges(e *Entry) ([][2]uint64, error) {
 	var ret [][2]uint64
@@ -717,53 +1023,199 @@ func (d *Data) Ranges(e *Entry) ([][2]uint64, error) {
 		ret = append(ret, [2]uint64{low, high})
 	}
 
+	var u *unit
+	if uidx := d.offsetToUnit(e.Offset); uidx >= 0 && uidx < len(d.unit) {
+		u = &d.unit[uidx]
+	}
+
+	if u != nil && u.vers >= 5 && d.rngLists != nil {
+		// DWARF version 5 and later
+		field := e.AttrField(AttrRanges)
+		if field == nil {
+			return ret, nil
+		}
+		switch field.Class {
+		case ClassRangeListPtr:
+			ranges, rangesOK := field.Val.(int64)
+			if !rangesOK {
+				return ret, nil
+			}
+			cu, base, err := d.baseAddressForEntry(e)
+			if err != nil {
+				return nil, err
+			}
+			return d.dwarf5Ranges(u, cu, base, ranges, ret)
+
+		case ClassRngList:
+			rnglist, ok := field.Val.(uint64)
+			if !ok {
+				return ret, nil
+			}
+			cu, base, err := d.baseAddressForEntry(e)
+			if err != nil {
+				return nil, err
+			}
+			return d.dwarf5Ranges(u, cu, base, int64(rnglist), ret)
+
+		default:
+			return ret, nil
+		}
+	}
+
+	// DWARF version 2 through 4
 	ranges, rangesOK := e.Val(AttrRanges).(int64)
 	if rangesOK && d.ranges != nil {
-		// The initial base address is the lowpc attribute
-		// of the enclosing compilation unit.
-		// Although DWARF specifies the lowpc attribute,
-		// comments in gdb/dwarf2read.c say that some versions
-		// of GCC use the entrypc attribute, so we check that too.
-		var cu *Entry
-		if e.Tag == TagCompileUnit {
-			cu = e
+		_, base, err := d.baseAddressForEntry(e)
+		if err != nil {
+			return nil, err
+		}
+		return d.dwarf2Ranges(u, base, ranges, ret)
+	}
+
+	return ret, nil
+}
+
+// baseAddressForEntry returns the initial base address to be used when
+// looking up the range list of entry e.
+// DWARF specifies that this should be the lowpc attribute of the enclosing
+// compilation unit, however comments in gdb/dwarf2read.c say that some
+// versions of GCC use the entrypc attribute, so we check that too.
+func (d *Data) baseAddressForEntry(e *Entry) (*Entry, uint64, error) {
+	var cu *Entry
+	if e.Tag == TagCompileUnit {
+		cu = e
+	} else {
+		i := d.offsetToUnit(e.Offset)
+		if i == -1 {
+			return nil, 0, errors.New("no unit for entry")
+		}
+		u := &d.unit[i]
+		b := makeBuf(d, u, "info", u.off, u.data)
+		cu = b.entry(nil, u.atable, u.base, u.vers)
+		if b.err != nil {
+			return nil, 0, b.err
+		}
+	}
+
+	if cuEntry, cuEntryOK := cu.Val(AttrEntrypc).(uint64); cuEntryOK {
+		return cu, cuEntry, nil
+	} else if cuLow, cuLowOK := cu.Val(AttrLowpc).(uint64); cuLowOK {
+		return cu, cuLow, nil
+	}
+
+	return cu, 0, nil
+}
+
+func (d *Data) dwarf2Ranges(u *unit, base uint64, ranges int64, ret [][2]uint64) ([][2]uint64, error) {
+	if ranges < 0 || ranges > int64(len(d.ranges)) {
+		return nil, fmt.Errorf("invalid range offset %d (max %d)", ranges, len(d.ranges))
+	}
+	buf := makeBuf(d, u, "ranges", Offset(ranges), d.ranges[ranges:])
+	for len(buf.data) > 0 {
+		low := buf.addr()
+		high := buf.addr()
+
+		if low == 0 && high == 0 {
+			break
+		}
+
+		if low == ^uint64(0)>>uint((8-u.addrsize())*8) {
+			base = high
 		} else {
-			i := d.offsetToUnit(e.Offset)
-			if i == -1 {
-				return nil, errors.New("no unit for entry")
-			}
-			u := &d.unit[i]
-			b := makeBuf(d, u, "info", u.off, u.data)
-			cu = b.entry(u.atable, u.base)
-			if b.err != nil {
-				return nil, b.err
-			}
-		}
-
-		var base uint64
-		if cuEntry, cuEntryOK := cu.Val(AttrEntrypc).(uint64); cuEntryOK {
-			base = cuEntry
-		} else if cuLow, cuLowOK := cu.Val(AttrLowpc).(uint64); cuLowOK {
-			base = cuLow
-		}
-
-		u := &d.unit[d.offsetToUnit(e.Offset)]
-		buf := makeBuf(d, u, "ranges", Offset(ranges), d.ranges[ranges:])
-		for len(buf.data) > 0 {
-			low = buf.addr()
-			high = buf.addr()
-
-			if low == 0 && high == 0 {
-				break
-			}
-
-			if low == ^uint64(0)>>uint((8-u.addrsize())*8) {
-				base = high
-			} else {
-				ret = append(ret, [2]uint64{base + low, base + high})
-			}
+			ret = append(ret, [2]uint64{base + low, base + high})
 		}
 	}
 
 	return ret, nil
+}
+
+// dwarf5Ranges interprets a debug_rnglists sequence, see DWARFv5 section
+// 2.17.3 (page 53).
+func (d *Data) dwarf5Ranges(u *unit, cu *Entry, base uint64, ranges int64, ret [][2]uint64) ([][2]uint64, error) {
+	if ranges < 0 || ranges > int64(len(d.rngLists)) {
+		return nil, fmt.Errorf("invalid rnglist offset %d (max %d)", ranges, len(d.ranges))
+	}
+	var addrBase int64
+	if cu != nil {
+		addrBase, _ = cu.Val(AttrAddrBase).(int64)
+	}
+
+	buf := makeBuf(d, u, "rnglists", 0, d.rngLists)
+	buf.skip(int(ranges))
+	for {
+		opcode := buf.uint8()
+		switch opcode {
+		case rleEndOfList:
+			if buf.err != nil {
+				return nil, buf.err
+			}
+			return ret, nil
+
+		case rleBaseAddressx:
+			baseIdx := buf.uint()
+			var err error
+			base, err = d.debugAddr(u, uint64(addrBase), baseIdx)
+			if err != nil {
+				return nil, err
+			}
+
+		case rleStartxEndx:
+			startIdx := buf.uint()
+			endIdx := buf.uint()
+
+			start, err := d.debugAddr(u, uint64(addrBase), startIdx)
+			if err != nil {
+				return nil, err
+			}
+			end, err := d.debugAddr(u, uint64(addrBase), endIdx)
+			if err != nil {
+				return nil, err
+			}
+			ret = append(ret, [2]uint64{start, end})
+
+		case rleStartxLength:
+			startIdx := buf.uint()
+			len := buf.uint()
+			start, err := d.debugAddr(u, uint64(addrBase), startIdx)
+			if err != nil {
+				return nil, err
+			}
+			ret = append(ret, [2]uint64{start, start + len})
+
+		case rleOffsetPair:
+			off1 := buf.uint()
+			off2 := buf.uint()
+			ret = append(ret, [2]uint64{base + off1, base + off2})
+
+		case rleBaseAddress:
+			base = buf.addr()
+
+		case rleStartEnd:
+			start := buf.addr()
+			end := buf.addr()
+			ret = append(ret, [2]uint64{start, end})
+
+		case rleStartLength:
+			start := buf.addr()
+			len := buf.uint()
+			ret = append(ret, [2]uint64{start, start + len})
+		}
+	}
+}
+
+// debugAddr returns the address at idx in debug_addr
+func (d *Data) debugAddr(format dataFormat, addrBase, idx uint64) (uint64, error) {
+	off := idx*uint64(format.addrsize()) + addrBase
+
+	if uint64(int(off)) != off {
+		return 0, errors.New("offset out of range")
+	}
+
+	b := makeBuf(d, format, "addr", 0, d.addr)
+	b.skip(int(off))
+	val := b.addr()
+	if b.err != nil {
+		return 0, b.err
+	}
+	return val, nil
 }
