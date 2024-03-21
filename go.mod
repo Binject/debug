@@ -1,3 +1,3 @@
-module github.com/Binject/debug
+module binject-debug
 
 go 1.22.1
