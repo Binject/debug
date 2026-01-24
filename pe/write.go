@@ -11,6 +11,11 @@ func (peFile *File) Bytes() ([]byte, error) {
 	var bytesWritten uint64
 	peBuf := bytes.NewBuffer(nil)
 
+	coffRelocData, coffRelocStart, err := peFile.prepareRelocationLayout()
+	if err != nil {
+		return nil, err
+	}
+
 	// write DOS header and stub
 	binary.Write(peBuf, binary.LittleEndian, peFile.DosHeader)
 	bytesWritten += uint64(binary.Size(peFile.DosHeader))
@@ -125,6 +130,22 @@ func (peFile *File) Bytes() ([]byte, error) {
 
 		binary.Write(peBuf, binary.LittleEndian, sectionData)
 		bytesWritten += uint64(len(sectionData))
+	}
+
+	if len(coffRelocData) > 0 {
+		if bytesWritten < uint64(coffRelocStart) {
+			pad := make([]byte, uint64(coffRelocStart)-bytesWritten)
+			peBuf.Write(pad)
+			bytesWritten += uint64(len(pad))
+		}
+		peBuf.Write(coffRelocData)
+		bytesWritten += uint64(len(coffRelocData))
+	}
+
+	if peFile.FileHeader.PointerToSymbolTable > 0 && bytesWritten < uint64(peFile.FileHeader.PointerToSymbolTable) {
+		pad := make([]byte, uint64(peFile.FileHeader.PointerToSymbolTable)-bytesWritten)
+		peBuf.Write(pad)
+		bytesWritten += uint64(len(pad))
 	}
 
 	// write symbols

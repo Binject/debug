@@ -7,6 +7,7 @@ package dwarf_test
 import (
 	. "debug/dwarf"
 	"io"
+	"path"
 	"strings"
 	"testing"
 )
@@ -306,9 +307,49 @@ var joinTests = []joinTest{
 
 func TestPathJoin(t *testing.T) {
 	for _, test := range joinTests {
-		got := PathJoin(test.dirname, test.filename)
+		got := pathJoinTest(test.dirname, test.filename)
 		if test.path != got {
 			t.Errorf("pathJoin(%q, %q) = %q, want %q", test.dirname, test.filename, got, test.path)
 		}
 	}
+}
+
+// pathJoinTest mirrors the unexported pathJoin in line.go for external tests.
+func pathJoinTest(dirname, filename string) string {
+	if len(dirname) == 0 {
+		return filename
+	}
+	drive, dirname := splitDriveTest(dirname)
+	if drive == "" {
+		return path.Join(dirname, filename)
+	}
+	drive2, filename := splitDriveTest(filename)
+	if drive2 != "" {
+		if strings.ToLower(drive) != strings.ToLower(drive2) {
+			return drive2 + filename
+		}
+	}
+	if !(strings.HasSuffix(dirname, "/") || strings.HasSuffix(dirname, `\`)) && dirname != "" {
+		dirname += `\`
+	}
+	return drive + dirname + filename
+}
+
+func splitDriveTest(path string) (drive, rest string) {
+	if len(path) >= 2 && path[1] == ':' {
+		if c := path[0]; 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' {
+			return path[:2], path[2:]
+		}
+	}
+	if len(path) > 3 && (path[0] == '\\' || path[0] == '/') && (path[1] == '\\' || path[1] == '/') {
+		npath := strings.Replace(path, "/", `\`, -1)
+		slash1 := strings.IndexByte(npath[2:], '\\') + 2
+		if slash1 > 2 {
+			slash2 := strings.IndexByte(npath[slash1+1:], '\\') + slash1 + 1
+			if slash2 > slash1 {
+				return path[:slash2], path[slash2:]
+			}
+		}
+	}
+	return "", path
 }

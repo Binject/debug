@@ -6,7 +6,6 @@ package gosym
 
 import (
 	"debug/elf"
-	"internal/testenv"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -22,7 +21,7 @@ var (
 )
 
 func dotest(t *testing.T) {
-	testenv.MustHaveGoBuild(t)
+	mustHaveGoBuild(t)
 	// For now, only works on amd64 platforms.
 	if runtime.GOARCH != "amd64" {
 		t.Skipf("skipping on non-AMD64 system %s", runtime.GOARCH)
@@ -33,7 +32,7 @@ func dotest(t *testing.T) {
 		t.Fatal(err)
 	}
 	pclinetestBinary = filepath.Join(pclineTempDir, "pclinetest")
-	cmd := exec.Command(testenv.GoToolPath(t), "build", "-o", pclinetestBinary)
+	cmd := exec.Command(goToolPath(t), "build", "-o", pclinetestBinary)
 	cmd.Dir = "testdata"
 	cmd.Env = append(os.Environ(), "GOOS=linux")
 	cmd.Stdout = os.Stdout

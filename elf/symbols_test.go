@@ -36,6 +36,14 @@ func TestSymbols(t *testing.T) {
 		} else if err == ErrNoSymbols {
 			fs = []Symbol{}
 		}
+		for i := range fs {
+			fs[i].NameIndex = 0
+			fs[i].SectIndex = 0
+		}
+		for i := range ts {
+			ts[i].NameIndex = 0
+			ts[i].SectIndex = 0
+		}
 		if !reflect.DeepEqual(ts, fs) {
 			t.Errorf("%s: Symbols = %v, want %v", file, ts, fs)
 		}

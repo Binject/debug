@@ -145,6 +145,17 @@ func (s *Section) Open() io.ReadSeeker {
 	return errorReader{err}
 }
 
+// Replace swaps the section's data with the provided reader and length.
+func (s *Section) Replace(reader io.ReaderAt, length int64) {
+	s.sr = io.NewSectionReader(reader, 0, length)
+	s.ReaderAt = s.sr
+	s.Size = uint64(length)
+	s.FileSize = uint64(length)
+	s.Flags &^= SHF_COMPRESSED
+	s.compressionType = 0
+	s.compressionOffset = 0
+}
+
 // A ProgHeader represents a single ELF program header.
 type ProgHeader struct {
 	Type   ProgType

@@ -35,6 +35,7 @@ type File struct {
 	EntryPoint uint64
 	Insertion  []byte
 
+	dylibOrdinalBySymbol map[uint32]uint8
 	closer io.Closer
 }
 

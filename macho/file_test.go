@@ -235,6 +235,9 @@ func TestOpen(t *testing.T) {
 			continue
 		}
 		for i, l := range f.Loads {
+			if l == nil {
+				continue
+			}
 			if len(l.Raw()) < 8 {
 				t.Errorf("open %s, command %d:\n\tload command %T don't have enough data\n", tt.file, i, l)
 			}

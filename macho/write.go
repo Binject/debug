@@ -15,10 +15,17 @@ func (machoFile *File) Bytes() ([]byte, error) {
 	var bytesWritten uint64
 	w := bytes.NewBuffer(nil)
 
+	relocData, relocStart, err := machoFile.prepareRelocationData()
+	if err != nil {
+		return nil, err
+	}
+	if err := machoFile.refreshSegmentLoadBytes(); err != nil {
+		return nil, err
+	}
+
 	// Write entire file header.
 	buf := &bytes.Buffer{}
-	err := binary.Write(buf, machoFile.ByteOrder, machoFile.FileHeader)
-	if err != nil {
+	if err := binary.Write(buf, machoFile.ByteOrder, machoFile.FileHeader); err != nil {
 		panic(err)
 	}
 	headerLength := len(buf.Bytes())
@@ -250,6 +257,16 @@ func (machoFile *File) Bytes() ([]byte, error) {
 		w.Write(pad4)
 		bytesWritten += uint64(len(pad4))
 		//log.Printf("%x: wrote pad of: %d", bytesWritten, len(pad4))
+	}
+
+	if len(relocData) > 0 {
+		if bytesWritten < relocStart {
+			pad := make([]byte, relocStart-bytesWritten)
+			w.Write(pad)
+			bytesWritten += uint64(len(pad))
+		}
+		w.Write(relocData)
+		bytesWritten += uint64(len(relocData))
 	}
 
 	//log.Println("All done!")
