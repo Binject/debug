@@ -58,3 +58,101 @@ func TestAddBaseAndSectionRelocations(t *testing.T) {
 		t.Fatalf("relocs stripped flag still set")
 	}
 }
+
+func TestAddSectionRelocationForSymbol(t *testing.T) {
+	f, err := Open(path.Join("testdata", "gcc-386-mingw-exec"))
+	if err != nil {
+		t.Fatalf("open pe: %v", err)
+	}
+	defer f.Close()
+
+	if len(f.COFFSymbols) == 0 {
+		t.Skip("no COFF symbols available")
+	}
+	var symName string
+	for i := range f.COFFSymbols {
+		name, err := f.COFFSymbols[i].FullName(f.StringTable)
+		if err != nil {
+			t.Fatalf("symbol name: %v", err)
+		}
+		if name != "" {
+			symName = name
+			break
+		}
+	}
+	if symName == "" {
+		t.Skip("no suitable symbol found")
+	}
+
+	sec := f.Sections[0]
+	rel := Reloc{VirtualAddress: 0, Type: 0}
+	if err := f.AddSectionRelocationForSymbol(sec.Name, symName, rel); err != nil {
+		t.Fatalf("add relocation: %v", err)
+	}
+	out, err := f.Bytes()
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f2, err := NewFile(bytes.NewReader(out))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	sec2 := f2.Section(sec.Name)
+	if sec2 == nil || len(sec2.Relocs) == 0 {
+		t.Fatalf("relocations not written")
+	}
+	idx, err := f.SymbolIndexByName(symName)
+	if err != nil {
+		t.Fatalf("symbol index: %v", err)
+	}
+	found := false
+	for _, r := range sec2.Relocs {
+		if r.SymbolTableIndex == idx {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("relocation with symbol index not found")
+	}
+}
+
+func TestRemoveRelocations(t *testing.T) {
+	f, err := Open(path.Join("testdata", "gcc-386-mingw-exec"))
+	if err != nil {
+		t.Fatalf("open pe: %v", err)
+	}
+	defer f.Close()
+
+	if len(f.Sections) == 0 {
+		t.Fatalf("no sections")
+	}
+	sec := f.Sections[0]
+	f.AddBaseReloc(sec.VirtualAddress, IMAGE_REL_BASED_HIGHLOW)
+	if err := f.AddSectionRelocation(sec.Name, Reloc{VirtualAddress: 0, SymbolTableIndex: 0, Type: 0}); err != nil {
+		t.Fatalf("add relocation: %v", err)
+	}
+	f.RemoveBaseRelocations()
+	if err := f.RemoveSectionRelocations(sec.Name); err != nil {
+		t.Fatalf("remove relocation: %v", err)
+	}
+
+	out, err := f.Bytes()
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f2, err := NewFile(bytes.NewReader(out))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if f2.BaseRelocationTable != nil && len(*f2.BaseRelocationTable) != 0 {
+		t.Fatalf("base relocations not removed")
+	}
+	sec2 := f2.Section(sec.Name)
+	if sec2 == nil {
+		t.Fatalf("missing section")
+	}
+	if len(sec2.Relocs) != 0 || sec2.NumberOfRelocations != 0 {
+		t.Fatalf("section relocations not removed")
+	}
+}

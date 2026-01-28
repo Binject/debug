@@ -91,3 +91,136 @@ func TestDyldBindOrdinal(t *testing.T) {
 		t.Fatalf("bind info missing ordinal opcode")
 	}
 }
+
+func TestScatteredRelocationRoundTrip(t *testing.T) {
+	f, err := Open(path.Join("testdata", "gcc-amd64-darwin-exec"))
+	if err != nil {
+		t.Fatalf("open macho: %v", err)
+	}
+	defer f.Close()
+
+	sec := f.Section("__text")
+	if sec == nil {
+		t.Fatalf("missing __text section")
+	}
+	origCount := len(sec.Relocs)
+	if err := f.AddScatteredRelocation("__text", 0, 0, 0, 2, false); err != nil {
+		t.Fatalf("add scattered relocation: %v", err)
+	}
+
+	out, err := f.Bytes()
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f2, err := NewFile(bytes.NewReader(out))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	sec2 := f2.Section("__text")
+	if sec2 == nil || len(sec2.Relocs) != origCount+1 {
+		t.Fatalf("relocations not persisted")
+	}
+	found := false
+	for _, rel := range sec2.Relocs {
+		if rel.Scattered {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("scattered relocation not preserved")
+	}
+}
+
+func TestRemoveRelocations(t *testing.T) {
+	f, err := Open(path.Join("testdata", "gcc-amd64-darwin-exec"))
+	if err != nil {
+		t.Fatalf("open macho: %v", err)
+	}
+	defer f.Close()
+
+	sec := f.Section("__text")
+	if sec == nil {
+		t.Fatalf("missing __text section")
+	}
+	if err := f.AddRelocation("__text", Reloc{Addr: 0, Type: 0, Len: 3, Pcrel: false, Extern: false}); err != nil {
+		t.Fatalf("add relocation: %v", err)
+	}
+	if err := f.RemoveRelocations("__text"); err != nil {
+		t.Fatalf("remove relocation: %v", err)
+	}
+
+	out, err := f.Bytes()
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f2, err := NewFile(bytes.NewReader(out))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	sec2 := f2.Section("__text")
+	if sec2 == nil {
+		t.Fatalf("missing __text section")
+	}
+	if sec2.Nreloc != 0 || len(sec2.Relocs) != 0 {
+		t.Fatalf("relocations not removed")
+	}
+}
+
+func TestWeakAndLazyBindKinds(t *testing.T) {
+	f, err := Open(path.Join("testdata", "gcc-amd64-darwin-exec"))
+	if err != nil {
+		t.Fatalf("open macho: %v", err)
+	}
+	defer f.Close()
+
+	if f.DylinkInfo == nil || f.Symtab == nil {
+		t.Skip("missing dyld info or symbol table")
+	}
+	sec := f.Section("__text")
+	if sec == nil {
+		t.Fatalf("missing __text section")
+	}
+
+	var symName string
+	for _, sym := range f.Symtab.Syms {
+		if sym.Name != "" {
+			symName = sym.Name
+			break
+		}
+	}
+	if symName == "" {
+		t.Skip("no suitable symbol found")
+	}
+
+	if err := f.AddRelocationForSymbol("__text", symName, 0, 0, 3, false); err != nil {
+		t.Fatalf("add relocation: %v", err)
+	}
+	if err := f.SetBindKindForSymbol(symName, BindWeak); err != nil {
+		t.Fatalf("set weak bind: %v", err)
+	}
+	if err := f.AddRelocationForSymbol("__text", symName, 4, 0, 3, false); err != nil {
+		t.Fatalf("add relocation: %v", err)
+	}
+	if err := f.SetBindKindForSymbol(symName, BindLazy); err != nil {
+		t.Fatalf("set lazy bind: %v", err)
+	}
+
+	out, err := f.Bytes()
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f2, err := NewFile(bytes.NewReader(out))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if f2.DylinkInfo == nil {
+		t.Fatalf("missing dyld info")
+	}
+	if len(f2.DylinkInfo.WeakBindingDat) == 0 {
+		t.Fatalf("weak binding info missing")
+	}
+	if len(f2.DylinkInfo.LazyBindingDat) == 0 {
+		t.Fatalf("lazy binding info missing")
+	}
+}

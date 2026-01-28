@@ -5,11 +5,39 @@ import (
 	"fmt"
 )
 
+// BindKind controls which dyld binding stream is used for an extern relocation.
+type BindKind uint8
+
+const (
+	BindNormal BindKind = iota
+	BindWeak
+	BindLazy
+)
+
 // AddRelocation appends a relocation to the named section.
 func (f *File) AddRelocation(sectionName string, rel Reloc) error {
 	section := f.Section(sectionName)
 	if section == nil {
 		return fmt.Errorf("section %q not found", sectionName)
+	}
+	section.Relocs = append(section.Relocs, rel)
+	return nil
+}
+
+// AddScatteredRelocation appends a scattered relocation to the named section.
+func (f *File) AddScatteredRelocation(sectionName string, addr uint32, value uint32, relType uint8, length uint8, pcrel bool) error {
+	section := f.Section(sectionName)
+	if section == nil {
+		return fmt.Errorf("section %q not found", sectionName)
+	}
+	rel := Reloc{
+		Addr:      addr,
+		Value:     value,
+		Type:      relType,
+		Len:       length,
+		Pcrel:     pcrel,
+		Extern:    false,
+		Scattered: true,
 	}
 	section.Relocs = append(section.Relocs, rel)
 	return nil
@@ -32,6 +60,16 @@ func (f *File) ReplaceRelocations(sectionName string, rels []Reloc) error {
 		return fmt.Errorf("section %q not found", sectionName)
 	}
 	section.Relocs = append(section.Relocs[:0], rels...)
+	return nil
+}
+
+// RemoveRelocations clears relocations for the named section.
+func (f *File) RemoveRelocations(sectionName string) error {
+	section := f.Section(sectionName)
+	if section == nil {
+		return fmt.Errorf("section %q not found", sectionName)
+	}
+	section.Relocs = section.Relocs[:0]
 	return nil
 }
 
@@ -106,5 +144,27 @@ func (f *File) SetDylibOrdinalForSymbolIndex(index uint32, ordinal uint8) error 
 		f.dylibOrdinalBySymbol = map[uint32]uint8{}
 	}
 	f.dylibOrdinalBySymbol[index] = ordinal
+	return nil
+}
+
+// SetBindKindForSymbol records a bind kind for the named symbol.
+func (f *File) SetBindKindForSymbol(symbolName string, kind BindKind) error {
+	if f.Symtab == nil {
+		return errors.New("symbol table not available")
+	}
+	for i, sym := range f.Symtab.Syms {
+		if sym.Name == symbolName {
+			return f.SetBindKindForSymbolIndex(uint32(i), kind)
+		}
+	}
+	return fmt.Errorf("symbol %q not found", symbolName)
+}
+
+// SetBindKindForSymbolIndex records a bind kind for the symbol index.
+func (f *File) SetBindKindForSymbolIndex(index uint32, kind BindKind) error {
+	if f.bindKindBySymbol == nil {
+		f.bindKindBySymbol = map[uint32]BindKind{}
+	}
+	f.bindKindBySymbol[index] = kind
 	return nil
 }

@@ -23,6 +23,30 @@ func (f *File) ReplaceRelocations(target *Section, rels interface{}) error {
 	return f.addRelocations(target, rels, true, nil)
 }
 
+// RemoveRelocations clears relocation entries for the target section.
+func (f *File) RemoveRelocations(target *Section) error {
+	if target == nil {
+		return errors.New("target section is nil")
+	}
+	targetIndex, ok := f.sectionIndex(target)
+	if !ok {
+		return errors.New("target section not found in file")
+	}
+	relocSecRel, _ := f.relocationSection(targetIndex, SHT_REL)
+	relocSecRela, _ := f.relocationSection(targetIndex, SHT_RELA)
+	if relocSecRel == nil && relocSecRela == nil {
+		return nil
+	}
+	if relocSecRel != nil {
+		relocSecRel.Replace(bytes.NewReader(nil), 0)
+	}
+	if relocSecRela != nil {
+		relocSecRela.Replace(bytes.NewReader(nil), 0)
+	}
+	f.updateDynamicRelocTags()
+	return nil
+}
+
 // AddRelocationsToRelocSection appends relocation entries to a specific relocation section
 // (e.g. ".rela.dyn" or ".rel.plt").
 func (f *File) AddRelocationsToRelocSection(sectionName string, rels interface{}) error {
@@ -63,6 +87,20 @@ func (f *File) AddRelocationsToRelocSection(sectionName string, rels interface{}
 	if err := f.relayoutAllocRelocationSection(relocSec); err != nil {
 		return err
 	}
+	f.updateDynamicRelocTags()
+	return nil
+}
+
+// RemoveRelocationsFromRelocSection clears relocation entries for the named relocation section.
+func (f *File) RemoveRelocationsFromRelocSection(sectionName string) error {
+	relocSec := f.Section(sectionName)
+	if relocSec == nil {
+		return fmt.Errorf("relocation section %q not found", sectionName)
+	}
+	if relocSec.Type != SHT_REL && relocSec.Type != SHT_RELA {
+		return fmt.Errorf("section %q is not a relocation section", sectionName)
+	}
+	relocSec.Replace(bytes.NewReader(nil), 0)
 	f.updateDynamicRelocTags()
 	return nil
 }
@@ -476,7 +514,7 @@ func (f *File) relayoutAllocRelocationSection(section *Section) error {
 	newOff := alignUp(prog.Off+prog.Filesz, align)
 	newEnd := newOff + section.FileSize
 	if nextLoadOff != 0 && newEnd > nextLoadOff {
-		return fmt.Errorf("no room to grow %q within PT_LOAD", section.Name)
+		return f.relayoutAllocRelocationSectionNewLoad(section)
 	}
 	newAddr := prog.Vaddr + (newOff - prog.Off)
 	section.Offset = newOff
@@ -495,6 +533,67 @@ func (f *File) relayoutAllocRelocationSection(section *Section) error {
 	}
 	return nil
 }
+
+func (f *File) relayoutAllocRelocationSectionNewLoad(section *Section) error {
+	align := section.Addralign
+	if align == 0 {
+		align = relocationAlign(f.Class)
+	}
+	var lastLoad *Prog
+	for _, p := range f.Progs {
+		if p.Type != PT_LOAD {
+			continue
+		}
+		if lastLoad == nil || p.Off > lastLoad.Off {
+			lastLoad = p
+		}
+	}
+	if lastLoad == nil {
+		return fmt.Errorf("no PT_LOAD segments available")
+	}
+	baseOff := lastLoad.Off + lastLoad.Filesz
+	fileEnd := f.maxFileEnd()
+	if fileEnd > baseOff {
+		baseOff = fileEnd
+	}
+	newOff := alignUp(baseOff, align)
+	newAddr := lastLoad.Vaddr + (newOff - lastLoad.Off)
+	section.Offset = newOff
+	section.Addr = newAddr
+	end := newOff + section.FileSize
+	if end > lastLoad.Off+lastLoad.Filesz {
+		delta := end - (lastLoad.Off + lastLoad.Filesz)
+		lastLoad.Filesz += delta
+		lastLoad.Memsz += delta
+	}
+
+	if end := section.Offset + section.FileSize; int64(end) > f.SHTOffset {
+		shtAlign := uint64(4)
+		if f.Class == ELFCLASS64 {
+			shtAlign = 8
+		}
+		f.SHTOffset = int64(alignUp(end, shtAlign))
+	}
+	return nil
+}
+
+func (f *File) maxFileEnd() uint64 {
+	var maxEnd uint64
+	for _, s := range f.Sections {
+		if s.Type == SHT_NOBITS || s.FileSize == 0 {
+			continue
+		}
+		end := s.Offset + s.FileSize
+		if end > maxEnd {
+			maxEnd = end
+		}
+	}
+	if f.SHTOffset > int64(maxEnd) {
+		maxEnd = uint64(f.SHTOffset)
+	}
+	return maxEnd
+}
+
 
 func (f *File) updateDynamicRelocTags() {
 	if len(f.DynTags) == 0 {

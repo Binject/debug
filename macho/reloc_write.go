@@ -73,17 +73,17 @@ func (f *File) prepareDyldInfoFromRelocs() error {
 	if f.DylinkInfo == nil {
 		return nil
 	}
-	rebaseDat, bindDat, err := f.encodeDyldInfoFromRelocs()
+	rebaseDat, bindDat, weakBindDat, lazyBindDat, err := f.encodeDyldInfoFromRelocs()
 	if err != nil {
 		return err
 	}
-	if len(rebaseDat) == 0 && len(bindDat) == 0 {
+	if len(rebaseDat) == 0 && len(bindDat) == 0 && len(weakBindDat) == 0 && len(lazyBindDat) == 0 {
 		return nil
 	}
 
 	start := alignUp64(f.endOfSections(), 4)
 	limit := f.dyldInfoEndLimit()
-	total := uint64(len(rebaseDat) + len(bindDat))
+	total := uint64(len(rebaseDat) + len(bindDat) + len(weakBindDat) + len(lazyBindDat))
 	if limit != 0 && start+total > limit {
 		return fmt.Errorf("not enough room for dyld info")
 	}
@@ -97,6 +97,16 @@ func (f *File) prepareDyldInfoFromRelocs() error {
 	f.DylinkInfo.BindingInfoDat = bindDat
 	f.DylinkInfo.BindingInfoLen = uint32(len(bindDat))
 	f.DylinkInfo.BindingInfoOffset = offset
+	offset += uint64(len(bindDat))
+
+	f.DylinkInfo.WeakBindingDat = weakBindDat
+	f.DylinkInfo.WeakBindingLen = uint32(len(weakBindDat))
+	f.DylinkInfo.WeakBindingOffset = offset
+	offset += uint64(len(weakBindDat))
+
+	f.DylinkInfo.LazyBindingDat = lazyBindDat
+	f.DylinkInfo.LazyBindingLen = uint32(len(lazyBindDat))
+	f.DylinkInfo.LazyBindingOffset = offset
 
 	return f.refreshDylinkInfoLoadBytes()
 }
@@ -145,19 +155,28 @@ func (f *File) dyldInfoEndLimit() uint64 {
 	return limit
 }
 
-func (f *File) encodeDyldInfoFromRelocs() ([]byte, []byte, error) {
+func (f *File) encodeDyldInfoFromRelocs() ([]byte, []byte, []byte, []byte, error) {
 	segments := f.segmentOrdinals()
 	if len(segments) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 
 	var rebase bytes.Buffer
 	var bind bytes.Buffer
+	var weak bytes.Buffer
+	var lazy bytes.Buffer
 
 	rebase.WriteByte(rebaseOpcodeSetTypeImm | rebaseTypePointer)
 	bind.WriteByte(bindOpcodeSetTypeImm | bindTypePointer)
+	weak.WriteByte(bindOpcodeSetTypeImm | bindTypePointer)
+	lazy.WriteByte(bindOpcodeSetTypeImm | bindTypePointer)
+
 	currentOrdinal := uint8(0)
+	weakOrdinal := uint8(0)
+	lazyOrdinal := uint8(0)
 	bind.WriteByte(bindOpcodeSetDylibOrdinalImm | currentOrdinal)
+	weak.WriteByte(bindOpcodeSetDylibOrdinalImm | weakOrdinal)
+	lazy.WriteByte(bindOpcodeSetDylibOrdinalImm | lazyOrdinal)
 
 	for _, s := range f.Sections {
 		if len(s.Relocs) == 0 {
@@ -165,35 +184,45 @@ func (f *File) encodeDyldInfoFromRelocs() ([]byte, []byte, error) {
 		}
 		ordinal, ok := segments[s.Seg]
 		if !ok {
-			return nil, nil, fmt.Errorf("unknown segment for section %q", s.Name)
+			return nil, nil, nil, nil, fmt.Errorf("unknown segment for section %q", s.Name)
 		}
 		seg := byte(ordinal & 0x0f)
 		for _, rel := range s.Relocs {
 			offset := uint64(s.Addr) + uint64(rel.Addr)
 			segBase := f.segmentAddr(s.Seg)
 			if offset < segBase {
-				return nil, nil, fmt.Errorf("relocation offset underflows segment %q", s.Seg)
+				return nil, nil, nil, nil, fmt.Errorf("relocation offset underflows segment %q", s.Seg)
 			}
 			segOffset := offset - segBase
 			if rel.Extern {
 				ordinal, err := f.dylibOrdinalForSymbol(rel.Value)
 				if err != nil {
-					return nil, nil, err
+					return nil, nil, nil, nil, err
 				}
-				if ordinal != currentOrdinal {
-					bind.WriteByte(bindOpcodeSetDylibOrdinalImm | ordinal)
-					currentOrdinal = ordinal
+				stream := &bind
+				streamOrdinal := &currentOrdinal
+				switch f.bindKindForSymbol(rel.Value) {
+				case BindWeak:
+					stream = &weak
+					streamOrdinal = &weakOrdinal
+				case BindLazy:
+					stream = &lazy
+					streamOrdinal = &lazyOrdinal
+				}
+				if ordinal != *streamOrdinal {
+					stream.WriteByte(bindOpcodeSetDylibOrdinalImm | ordinal)
+					*streamOrdinal = ordinal
 				}
 				name, err := f.symbolName(rel.Value)
 				if err != nil {
-					return nil, nil, err
+					return nil, nil, nil, nil, err
 				}
-				bind.WriteByte(bindOpcodeSetSegmentAndOffsetULEB | seg)
-				bind.Write(encodeULEB128(segOffset))
-				bind.WriteByte(bindOpcodeSetSymbolTrailingFlags | 0)
-				bind.WriteString(name)
-				bind.WriteByte(0)
-				bind.WriteByte(bindOpcodeDoBind)
+				stream.WriteByte(bindOpcodeSetSegmentAndOffsetULEB | seg)
+				stream.Write(encodeULEB128(segOffset))
+				stream.WriteByte(bindOpcodeSetSymbolTrailingFlags | 0)
+				stream.WriteString(name)
+				stream.WriteByte(0)
+				stream.WriteByte(bindOpcodeDoBind)
 			} else {
 				rebase.WriteByte(rebaseOpcodeSetSegmentAndOffsetULEB | seg)
 				rebase.Write(encodeULEB128(segOffset))
@@ -203,9 +232,17 @@ func (f *File) encodeDyldInfoFromRelocs() ([]byte, []byte, error) {
 	}
 
 	rebase.WriteByte(rebaseOpcodeDone)
-	bind.WriteByte(bindOpcodeDone)
+	if bind.Len() > 1 {
+		bind.WriteByte(bindOpcodeDone)
+	}
+	if weak.Len() > 1 {
+		weak.WriteByte(bindOpcodeDone)
+	}
+	if lazy.Len() > 1 {
+		lazy.WriteByte(bindOpcodeDone)
+	}
 
-	return rebase.Bytes(), bind.Bytes(), nil
+	return rebase.Bytes(), bind.Bytes(), weak.Bytes(), lazy.Bytes(), nil
 }
 
 func (f *File) segmentOrdinals() map[string]int {
@@ -248,6 +285,13 @@ func (f *File) dylibOrdinalForSymbol(index uint32) (uint8, error) {
 		return 0, fmt.Errorf("dylib ordinal %d out of range", ordinal)
 	}
 	return ordinal, nil
+}
+
+func (f *File) bindKindForSymbol(index uint32) BindKind {
+	if f.bindKindBySymbol == nil {
+		return BindNormal
+	}
+	return f.bindKindBySymbol[index]
 }
 
 func encodeULEB128(value uint64) []byte {

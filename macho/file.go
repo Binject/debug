@@ -36,6 +36,7 @@ type File struct {
 	Insertion  []byte
 
 	dylibOrdinalBySymbol map[uint32]uint8
+	bindKindBySymbol     map[uint32]BindKind
 	closer io.Closer
 }
 

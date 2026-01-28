@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"sort"
 )
 
 // Bytes - returns the bytes of an Elf file
@@ -152,8 +153,10 @@ func (elfFile *File) Bytes() ([]byte, error) {
 		}
 	}
 
-	sortedSections := elfFile.Sections[:]
-	//sort.Slice(sortedSections, func(a, b int) bool { return elfFile.Sections[a].Link < elfFile.Sections[b].Link })
+	sortedSections := append([]*Section(nil), elfFile.Sections...)
+	sort.SliceStable(sortedSections, func(i, j int) bool {
+		return sortedSections[i].Offset < sortedSections[j].Offset
+	})
 	for _, s := range sortedSections {
 
 		//log.Printf("Writing section: %s type: %+v\n", s.Name, s.Type)
