@@ -137,7 +137,7 @@ func newFileInternal(r io.ReaderAt, memoryMode bool) (*File, error) {
 		return nil, err
 	}
 	switch f.FileHeader.Machine {
-	case IMAGE_FILE_MACHINE_UNKNOWN, IMAGE_FILE_MACHINE_ARMNT, IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_I386:
+	case IMAGE_FILE_MACHINE_UNKNOWN, IMAGE_FILE_MACHINE_ARMNT, IMAGE_FILE_MACHINE_ARM64, IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_I386:
 	default:
 		return nil, fmt.Errorf("Unrecognised COFF file header machine value of 0x%x", f.FileHeader.Machine)
 	}
@@ -442,6 +442,12 @@ func (e *FormatError) Error() string {
 }
 
 // RVAToFileOffset Converts a Relative offset to the actual offset in the file.
+// is64 reports whether the file has a PE32+ optional header.
+func (f *File) is64() bool {
+	_, ok := f.OptionalHeader.(*OptionalHeader64)
+	return ok
+}
+
 func (f *File) RVAToFileOffset(rva uint32) uint32 {
 	var offset uint32
 	for _, section := range f.Sections {

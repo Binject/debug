@@ -78,7 +78,7 @@ func (f *File) ImportDirectoryTable() ([]ImportDirectory, *Section, *[]byte, err
 // satisfied by other libraries at dynamic load time.
 // It does not return weak symbols.
 func (f *File) ImportedSymbols() ([]string, error) {
-	pe64 := f.Machine == IMAGE_FILE_MACHINE_AMD64
+	pe64 := f.is64()
 
 	ida, ds, sectionData, err := f.ImportDirectoryTable()
 	if err != nil {
@@ -142,7 +142,7 @@ func (f *File) ImportedLibraries() ([]string, error) {
 }
 
 func (f File) sectionFromDirectoryEntry(directory uint32) (*Section, DataDirectory) {
-	pe64 := f.Machine == IMAGE_FILE_MACHINE_AMD64
+	pe64 := f.is64()
 
 	// grab the number of data directory entries
 	var ddLength uint32

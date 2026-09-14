@@ -31,7 +31,7 @@ type Export struct {
 
 // Exports - gets exports
 func (f *File) Exports() ([]Export, error) {
-	pe64 := f.Machine == IMAGE_FILE_MACHINE_AMD64
+	pe64 := f.is64()
 
 	// grab the number of data directory entries
 	var ddLength uint32

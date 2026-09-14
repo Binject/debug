@@ -62,7 +62,7 @@ func (f *File) readBaseRelocationTable() (*[]RelocationTableEntry, error) {
 	}
 
 	var dd DataDirectory
-	if f.Machine == IMAGE_FILE_MACHINE_AMD64 {
+	if f.is64() {
 		dd = f.OptionalHeader.(*OptionalHeader64).DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
 	} else {
 		dd = f.OptionalHeader.(*OptionalHeader32).DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
@@ -111,7 +111,7 @@ func (f *File) readBaseRelocationTable() (*[]RelocationTableEntry, error) {
 // Relocate - performs base relocations on this image to the given offset
 func (f *File) Relocate(baseAddr uint64, image *[]byte) {
 	var imageBase uint64
-	pe64 := f.Machine == IMAGE_FILE_MACHINE_AMD64
+	pe64 := f.is64()
 	if pe64 {
 		imageBase = f.OptionalHeader.(*OptionalHeader64).ImageBase
 	} else {
