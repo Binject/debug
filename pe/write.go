@@ -48,25 +48,23 @@ func (peFile *File) Bytes() ([]byte, error) {
 		oldCertTableOffset, oldCertTableSize uint32
 	)
 
-	switch peFile.FileHeader.Machine {
-	case IMAGE_FILE_MACHINE_I386:
+	switch optionalHeader := peFile.OptionalHeader.(type) {
+	case *OptionalHeader32:
 		is32bit = true
-		optionalHeader := peFile.OptionalHeader.(*OptionalHeader32)
-		binary.Write(peBuf, binary.LittleEndian, peFile.OptionalHeader.(*OptionalHeader32))
+		binary.Write(peBuf, binary.LittleEndian, optionalHeader)
 		bytesWritten += uint64(binary.Size(optionalHeader))
 
 		oldCertTableOffset = optionalHeader.DataDirectory[CERTIFICATE_TABLE].VirtualAddress
 		oldCertTableSize = optionalHeader.DataDirectory[CERTIFICATE_TABLE].Size
-	case IMAGE_FILE_MACHINE_AMD64:
+	case *OptionalHeader64:
 		is32bit = false
-		optionalHeader := peFile.OptionalHeader.(*OptionalHeader64)
 		binary.Write(peBuf, binary.LittleEndian, optionalHeader)
 		bytesWritten += uint64(binary.Size(optionalHeader))
 
 		oldCertTableOffset = optionalHeader.DataDirectory[CERTIFICATE_TABLE].VirtualAddress
 		oldCertTableSize = optionalHeader.DataDirectory[CERTIFICATE_TABLE].Size
 	default:
-		return nil, errors.New("architecture not supported")
+		return nil, errors.New("unsupported optional header type")
 	}
 
 	// write section headers

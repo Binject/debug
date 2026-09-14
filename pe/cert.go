@@ -17,15 +17,15 @@ func readCertTable(f *File, r io.ReadSeeker) ([]byte, error) {
 
 	var certTableOffset, certTableSize uint32
 
-	switch f.FileHeader.Machine {
-	case IMAGE_FILE_MACHINE_I386:
-		certTableOffset = f.OptionalHeader.(*OptionalHeader32).DataDirectory[CERTIFICATE_TABLE].VirtualAddress
-		certTableSize = f.OptionalHeader.(*OptionalHeader32).DataDirectory[CERTIFICATE_TABLE].Size
-	case IMAGE_FILE_MACHINE_AMD64:
-		certTableOffset = f.OptionalHeader.(*OptionalHeader64).DataDirectory[CERTIFICATE_TABLE].VirtualAddress
-		certTableSize = f.OptionalHeader.(*OptionalHeader64).DataDirectory[CERTIFICATE_TABLE].Size
+	switch oh := f.OptionalHeader.(type) {
+	case *OptionalHeader32:
+		certTableOffset = oh.DataDirectory[CERTIFICATE_TABLE].VirtualAddress
+		certTableSize = oh.DataDirectory[CERTIFICATE_TABLE].Size
+	case *OptionalHeader64:
+		certTableOffset = oh.DataDirectory[CERTIFICATE_TABLE].VirtualAddress
+		certTableSize = oh.DataDirectory[CERTIFICATE_TABLE].Size
 	default:
-		return nil, errors.New("architecture not supported")
+		return nil, errors.New("unsupported optional header type")
 	}
 
 	// check if certificate table exists
