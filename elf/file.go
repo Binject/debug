@@ -940,6 +940,65 @@ func (f *File) parseDynTags() error {
 	return nil
 }
 
+// maxDynamicEntries is the most PT_DYNAMIC entries DynValues will read.
+// A larger claim is rejected before a buffer is allocated.
+const maxDynamicEntries = 4096
+
+// DynValues reads PT_DYNAMIC. The entry width follows the ELF class.
+// A size that is not a bounded table of that width is an error.
+// When the file has no PT_DYNAMIC segment, the section-derived DynTags are returned.
+func (f *File) DynValues() ([]DynTagValue, error) {
+	var prog *Prog
+	for _, p := range f.Progs {
+		if p != nil && p.Type == PT_DYNAMIC {
+			prog = p
+			break
+		}
+	}
+	if prog == nil {
+		if len(f.DynTags) == 0 {
+			return nil, nil
+		}
+		out := make([]DynTagValue, len(f.DynTags))
+		copy(out, f.DynTags)
+		return out, nil
+	}
+	ent := 8
+	if f.Class == ELFCLASS64 {
+		ent = 16
+	}
+	if prog.Filesz == 0 {
+		return nil, nil
+	}
+	if prog.Filesz > uint64(maxDynamicEntries*ent) || prog.Filesz%uint64(ent) != 0 {
+		return nil, fmt.Errorf("PT_DYNAMIC size %d is not a bounded table of %d-byte entries", prog.Filesz, ent)
+	}
+	buf := make([]byte, prog.Filesz)
+	n, err := prog.ReadAt(buf, 0)
+	if n < len(buf) {
+		if err == nil {
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, fmt.Errorf("PT_DYNAMIC: %w", err)
+	}
+	out := make([]DynTagValue, 0, len(buf)/ent)
+	for off := 0; off+ent <= len(buf); off += ent {
+		var tag, val uint64
+		if f.Class == ELFCLASS64 {
+			tag = f.ByteOrder.Uint64(buf[off:])
+			val = f.ByteOrder.Uint64(buf[off+8:])
+		} else {
+			tag = uint64(f.ByteOrder.Uint32(buf[off:]))
+			val = uint64(f.ByteOrder.Uint32(buf[off+4:]))
+		}
+		if DynTag(tag) == DT_NULL {
+			break
+		}
+		out = append(out, DynTagValue{Tag: DynTag(tag), Value: val})
+	}
+	return out, nil
+}
+
 // DynString returns the strings listed for the given tag in the file's dynamic
 // section.
 //

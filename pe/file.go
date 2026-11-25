@@ -268,41 +268,12 @@ func newFileInternal(r io.ReaderAt, memoryMode bool) (*File, error) {
 		}
 	}
 
-	//fill net info
+	// A managed image stores the CLR header. A hostile size is an error on
+	// f.Net and does not fail the rest of the parse.
 	if f.IsManaged() {
-		var va, size uint32
-
-		//determine location of the COM descriptor directory
-		switch v := f.OptionalHeader.(type) {
-		case *OptionalHeader32:
-			va = v.DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].VirtualAddress
-			size = v.DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].Size
-		case *OptionalHeader64:
-			va = v.DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].VirtualAddress
-			size = v.DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].Size
+		if err := f.readNet(r, memoryMode); err != nil {
+			f.Net.Error = err.Error()
 		}
-
-		//I'm unsure how to get a reader (not a readerat) for a particular thing, so copying buffers around.. this could be more optimal
-		buff := make([]byte, size)
-
-		//none of these reads have errors being caught either, which is probably not ideal
-		if !memoryMode {
-			r.ReadAt(buff, int64(f.RVAToFileOffset(va)))
-		} else {
-			r.ReadAt(buff, int64(va))
-		}
-		binary.Read(bytes.NewReader(buff), binary.LittleEndian, &f.Net.NetDirectory)
-
-		//Now that we have the COR20 header (COM descriptor directory header), we can get the metadata section header, which has the version
-		buff = make([]byte, f.Net.NetDirectory.MetaDataSize)
-		//again, none of the reads are error checked :shrug:
-		if !memoryMode {
-			r.ReadAt(buff, int64(f.RVAToFileOffset(f.Net.NetDirectory.MetaDataRVA)))
-		} else {
-			r.ReadAt(buff, int64(f.Net.NetDirectory.MetaDataRVA))
-		}
-		f.Net.MetaData, _ = newMetadataHeader(bytes.NewReader(buff))
-
 	}
 
 	return f, nil

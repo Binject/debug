@@ -745,18 +745,20 @@ func (i CompressionType) GoString() string { return stringName(uint32(i), compre
 type ProgType int
 
 const (
-	PT_NULL    ProgType = 0          /* Unused entry. */
-	PT_LOAD    ProgType = 1          /* Loadable segment. */
-	PT_DYNAMIC ProgType = 2          /* Dynamic linking information segment. */
-	PT_INTERP  ProgType = 3          /* Pathname of interpreter. */
-	PT_NOTE    ProgType = 4          /* Auxiliary information. */
-	PT_SHLIB   ProgType = 5          /* Reserved (not used). */
-	PT_PHDR    ProgType = 6          /* Location of program header itself. */
-	PT_TLS     ProgType = 7          /* Thread local storage segment */
-	PT_LOOS    ProgType = 0x60000000 /* First OS-specific. */
-	PT_HIOS    ProgType = 0x6fffffff /* Last OS-specific. */
-	PT_LOPROC  ProgType = 0x70000000 /* First processor-specific type. */
-	PT_HIPROC  ProgType = 0x7fffffff /* Last processor-specific type. */
+	PT_NULL      ProgType = 0          /* Unused entry. */
+	PT_LOAD      ProgType = 1          /* Loadable segment. */
+	PT_DYNAMIC   ProgType = 2          /* Dynamic linking information segment. */
+	PT_INTERP    ProgType = 3          /* Pathname of interpreter. */
+	PT_NOTE      ProgType = 4          /* Auxiliary information. */
+	PT_SHLIB     ProgType = 5          /* Reserved (not used). */
+	PT_PHDR      ProgType = 6          /* Location of program header itself. */
+	PT_TLS       ProgType = 7          /* Thread local storage segment */
+	PT_GNU_STACK ProgType = 0x6474e551 /* Stack flags, GNU extension. */
+	PT_GNU_RELRO ProgType = 0x6474e552 /* Read-only after relocation, GNU extension. */
+	PT_LOOS      ProgType = 0x60000000 /* First OS-specific. */
+	PT_HIOS      ProgType = 0x6fffffff /* Last OS-specific. */
+	PT_LOPROC    ProgType = 0x70000000 /* First processor-specific type. */
+	PT_HIPROC    ProgType = 0x7fffffff /* Last processor-specific type. */
 )
 
 var ptStrings = []intName{
@@ -768,6 +770,8 @@ var ptStrings = []intName{
 	{5, "PT_SHLIB"},
 	{6, "PT_PHDR"},
 	{7, "PT_TLS"},
+	{0x6474e551, "PT_GNU_STACK"},
+	{0x6474e552, "PT_GNU_RELRO"},
 	{0x60000000, "PT_LOOS"},
 	{0x6fffffff, "PT_HIOS"},
 	{0x70000000, "PT_LOPROC"},
@@ -839,6 +843,7 @@ const (
 	   or none */
 	DT_PREINIT_ARRAY   DynTag = 32         /* Address of the array of pointers to pre-initialization functions. */
 	DT_PREINIT_ARRAYSZ DynTag = 33         /* Size in bytes of the array of pre-initialization functions. */
+	DT_FLAGS_1         DynTag = 0x6ffffffb /* State flags, see DF_1_* constants. */
 	DT_LOOS            DynTag = 0x6000000d /* First OS-specific */
 	DT_HIOS            DynTag = 0x6ffff000 /* Last OS-specific */
 	DT_VERSYM          DynTag = 0x6ffffff0
@@ -883,6 +888,7 @@ var dtStrings = []intName{
 	{32, "DT_ENCODING"},
 	{32, "DT_PREINIT_ARRAY"},
 	{33, "DT_PREINIT_ARRAYSZ"},
+	{0x6ffffffb, "DT_FLAGS_1"},
 	{0x6000000d, "DT_LOOS"},
 	{0x6ffff000, "DT_HIOS"},
 	{0x6ffffff0, "DT_VERSYM"},
@@ -925,6 +931,12 @@ var dflagStrings = []intName{
 	{0x0008, "DF_BIND_NOW"},
 	{0x0010, "DF_STATIC_TLS"},
 }
+
+// DF_1_* values for DT_FLAGS_1.
+const (
+	DF_1_NOW DynFlag = 0x00000001
+	DF_1_PIE DynFlag = 0x08000000
+)
 
 func (i DynFlag) String() string   { return flagName(uint32(i), dflagStrings, false) }
 func (i DynFlag) GoString() string { return flagName(uint32(i), dflagStrings, true) }
