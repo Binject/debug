@@ -374,11 +374,13 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		f.ShStrIndex = int(hdr.Shstrndx)
 	}
 
-	if shnum > 0 && f.SHTOffset > 0 && (f.ShStrIndex < 0 || f.ShStrIndex >= shnum) {
-		return nil, &FormatError{0, "invalid ELF shstrndx", f.ShStrIndex}
+	// A hostile program-header count, including PN_XNUM (0xffff) when the
+	// real count was never stored, must not allocate a giant table.
+	if phnum < 0 || phnum > maxProgHeaders || phentsize < 0 {
+		return nil, &FormatError{0, "too many program headers", phnum}
 	}
 
-	// Read program headers
+	// Read program headers. A short read here still means the loads are unusable.
 	f.Progs = make([]*Prog, phnum)
 	for i := 0; i < phnum; i++ {
 		off := phoff + int64(i)*int64(phentsize)
@@ -421,20 +423,44 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		f.Progs[i] = p
 	}
 
-	// Read section headers
-	f.Sections = make([]*Section, shnum)
-	names := make([]uint32, shnum)
+	// Section headers are not required to load the file. A missing, truncated,
+	// or unnamed table leaves Progs and Entry intact and Sections empty.
+	f.readSections(sr, r, shnum, shentsize)
+	_ = f.parseDynTags()
+	return f, nil
+}
+
+// maxProgHeaders bounds e_phnum. PN_XNUM (0xffff) is above this on purpose:
+// the extended count lives in a section header, and a missing section table
+// must not turn that sentinel into 65535 allocations.
+// maxSectHeaders bounds e_shnum the same way.
+const (
+	maxProgHeaders = 4096
+	maxSectHeaders = 65536
+)
+
+// readSections fills f.Sections. Any failure drops the section table.
+func (f *File) readSections(sr *io.SectionReader, r io.ReaderAt, shnum, shentsize int) {
+	if shnum <= 0 || f.SHTOffset <= 0 || shentsize <= 0 || shnum > maxSectHeaders {
+		return
+	}
+	if f.ShStrIndex < 0 || f.ShStrIndex >= shnum {
+		return
+	}
+	names := make([]uint32, 0, shnum)
 	for i := 0; i < shnum; i++ {
 		off := f.SHTOffset + int64(i)*int64(shentsize)
 		sr.Seek(off, seekStart)
 		s := new(Section)
+		var name uint32
 		switch f.Class {
 		case ELFCLASS32:
 			sh := new(Section32)
 			if err := binary.Read(sr, f.ByteOrder, sh); err != nil {
-				return nil, err
+				f.Sections = nil
+				return
 			}
-			names[i] = sh.Name
+			name = sh.Name
 			s.SectionHeader = SectionHeader{
 				Type:      SectionType(sh.Type),
 				Flags:     SectionFlag(sh.Flags),
@@ -448,13 +474,13 @@ func NewFile(r io.ReaderAt) (*File, error) {
 				Shnum:     i,
 				Shname:    sh.Name,
 			}
-
 		case ELFCLASS64:
 			sh := new(Section64)
 			if err := binary.Read(sr, f.ByteOrder, sh); err != nil {
-				return nil, err
+				f.Sections = nil
+				return
 			}
-			names[i] = sh.Name
+			name = sh.Name
 			s.SectionHeader = SectionHeader{
 				Type:      SectionType(sh.Type),
 				Flags:     SectionFlag(sh.Flags),
@@ -470,59 +496,64 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			}
 		}
 		s.sr = io.NewSectionReader(r, int64(s.Offset), int64(s.FileSize))
-
 		if s.Flags&SHF_COMPRESSED == 0 {
 			s.ReaderAt = s.sr
 			s.Size = s.FileSize
-		} else {
-			// Read the compression header.
-			switch f.Class {
-			case ELFCLASS32:
-				ch := new(Chdr32)
-				if err := binary.Read(s.sr, f.ByteOrder, ch); err != nil {
-					return nil, err
-				}
-				s.compressionType = CompressionType(ch.Type)
-				s.Size = uint64(ch.Size)
-				s.Addralign = uint64(ch.Addralign)
-				s.compressionOffset = int64(binary.Size(ch))
-			case ELFCLASS64:
-				ch := new(Chdr64)
-				if err := binary.Read(s.sr, f.ByteOrder, ch); err != nil {
-					return nil, err
-				}
-				s.compressionType = CompressionType(ch.Type)
-				s.Size = ch.Size
-				s.Addralign = ch.Addralign
-				s.compressionOffset = int64(binary.Size(ch))
-			}
+		} else if !f.readCompressedHeader(s) {
+			s.ReaderAt = s.sr
+			s.Size = s.FileSize
+			s.Flags &^= SHF_COMPRESSED
 		}
-
-		f.Sections[i] = s
+		names = append(names, name)
+		f.Sections = append(f.Sections, s)
 	}
-
-	if err := f.parseDynTags(); err != nil {
-		return nil, err
-	}
-
 	if len(f.Sections) == 0 {
-		return f, nil
+		return
 	}
-
-	// Load section header string table.
 	shstrtab, err := f.Sections[f.ShStrIndex].Data()
 	if err != nil {
-		return nil, err
+		f.Sections = nil
+		return
 	}
+	named := 0
 	for i, s := range f.Sections {
-		var ok bool
-		s.Name, ok = getString(shstrtab, int(names[i]))
+		name, ok := getString(shstrtab, int(names[i]))
 		if !ok {
-			return nil, &FormatError{f.SHTOffset + int64(i*shentsize), "bad section name index", names[i]}
+			continue
 		}
+		s.Name = name
+		named++
 	}
+	if named == 0 {
+		f.Sections = nil
+	}
+}
 
-	return f, nil
+// readCompressedHeader parses a compression header. A short header is not fatal.
+func (f *File) readCompressedHeader(s *Section) bool {
+	switch f.Class {
+	case ELFCLASS32:
+		ch := new(Chdr32)
+		if err := binary.Read(s.sr, f.ByteOrder, ch); err != nil {
+			return false
+		}
+		s.compressionType = CompressionType(ch.Type)
+		s.Size = uint64(ch.Size)
+		s.Addralign = uint64(ch.Addralign)
+		s.compressionOffset = int64(binary.Size(ch))
+	case ELFCLASS64:
+		ch := new(Chdr64)
+		if err := binary.Read(s.sr, f.ByteOrder, ch); err != nil {
+			return false
+		}
+		s.compressionType = CompressionType(ch.Type)
+		s.Size = ch.Size
+		s.Addralign = ch.Addralign
+		s.compressionOffset = int64(binary.Size(ch))
+	default:
+		return false
+	}
+	return true
 }
 
 // getSymbols returns a slice of Symbols from parsing the symbol table
